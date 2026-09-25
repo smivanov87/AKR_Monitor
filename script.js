@@ -675,9 +675,9 @@ async function loadSelected() {
 
         "time.max":
           iso(endMs),
-
-        parameters:
-          `Time,${SPECTRUM}`,
+   
+         parameters:
+              SPECTRUM,
 
         format:
           "json"
