@@ -429,21 +429,18 @@ async function findLatestObservation() {
 
 
   const json =
-    await hapi({
-      id: DATASET,
+  await hapi({
+    id: DATASET,
 
-      "time.min":
-        iso(searchStart),
+    "time.min":
+      iso(searchStart),
 
-      "time.max":
-        iso(searchEnd),
+    "time.max":
+      iso(searchEnd),
 
-      parameters:
-        "Time",
-
-      format:
-        "json"
-    });
+    format:
+      "json"
+  });
 
 
   const rows =
