@@ -15,33 +15,31 @@ const SPECTRUM =
   "spectra_e_mix";
 
 
-/*
- * These are populated dynamically from CDAWeb /info.
- *
- * IMPORTANT:
- * There is deliberately no fixed "search the last N hours"
- * constant here.
- */
+/* =========================================================
+   DATASET METADATA / APPLICATION STATE
+   ========================================================= */
+
 let DATASET_START = null;
 let DATASET_END = null;
 let LATEST_OBSERVATION = null;
 
+let HAPI_METADATA = null;
 
-/* =========================================================
-   APPLICATION STATE
-   ========================================================= */
+let TIME_PARAMETER = null;
+let SPECTRUM_PARAMETER = null;
 
-let currentData = null;
+let CURRENT_DATA = null;
 
 let resizeTimer = null;
 
 
 /* =========================================================
-   DOM HELPERS
+   DOM HELPER
    ========================================================= */
 
-const $ = id =>
-  document.getElementById(id);
+function $(id) {
+  return document.getElementById(id);
+}
 
 
 /* =========================================================
@@ -67,8 +65,8 @@ function setStatus(message, isError = false) {
     element.classList.add("error");
   } else if (
     message.toLowerCase().includes("loaded") ||
-    message.toLowerCase().includes("ready") ||
-    message.toLowerCase().includes("available")
+    message.toLowerCase().includes("available") ||
+    message.toLowerCase().includes("ready")
   ) {
     element.classList.add("ok");
   }
@@ -106,7 +104,7 @@ function hidePlotMessage() {
 
 
 /* =========================================================
-   UTC DATE HELPERS
+   DATE / TIME HELPERS
    ========================================================= */
 
 function iso(milliseconds) {
@@ -134,24 +132,29 @@ function formatInputDate(milliseconds) {
     date.getUTCFullYear();
 
   const month =
-    String(date.getUTCMonth() + 1)
-      .padStart(2, "0");
+    String(
+      date.getUTCMonth() + 1
+    ).padStart(2, "0");
 
   const day =
-    String(date.getUTCDate())
-      .padStart(2, "0");
+    String(
+      date.getUTCDate()
+    ).padStart(2, "0");
 
   const hours =
-    String(date.getUTCHours())
-      .padStart(2, "0");
+    String(
+      date.getUTCHours()
+    ).padStart(2, "0");
 
   const minutes =
-    String(date.getUTCMinutes())
-      .padStart(2, "0");
+    String(
+      date.getUTCMinutes()
+    ).padStart(2, "0");
 
   const seconds =
-    String(date.getUTCSeconds())
-      .padStart(2, "0");
+    String(
+      date.getUTCSeconds()
+    ).padStart(2, "0");
 
   return (
     `${year}-${month}-${day}` +
@@ -177,56 +180,41 @@ function parseInputDate(id) {
 
   const element = $(id);
 
-  if (!element || !element.value) {
+  if (
+    !element ||
+    !element.value
+  ) {
     return NaN;
   }
 
   /*
-   * datetime-local has no timezone.
-   * The application defines these inputs as UTC.
+   * datetime-local does not contain a timezone.
+   *
+   * This application explicitly interprets the value as UTC.
    */
-  const milliseconds =
-    Date.parse(
-      `${element.value}Z`
-    );
-
-  return milliseconds;
+  return Date.parse(
+    `${element.value}Z`
+  );
 }
 
 
 /* =========================================================
-   HAPI REQUEST
+   GENERIC JSON REQUEST
    ========================================================= */
 
-async function hapi(parameters) {
-
-  const url =
-    new URL(`${API}/data`);
-
-  Object.entries(parameters)
-    .forEach(([key, value]) => {
-
-      if (
-        value !== undefined &&
-        value !== null
-      ) {
-        url.searchParams.set(
-          key,
-          value
-        );
-      }
-
-    });
-
+async function requestJson(url) {
 
   const response =
     await fetch(
       url.toString(),
       {
         method: "GET",
+
         headers: {
-          "Accept": "application/json"
+          "Accept":
+            "application/json"
         },
+
         cache: "no-store"
       }
     );
@@ -243,11 +231,12 @@ async function hapi(parameters) {
         await response.text();
 
       if (text) {
-        message += ` — ${text}`;
+        message +=
+          ` — ${text}`;
       }
 
     } catch (_) {
-      /* Ignore response parsing errors. */
+      /* Ignore parsing error. */
     }
 
     throw new Error(message);
@@ -259,13 +248,16 @@ async function hapi(parameters) {
 
 
 /* =========================================================
-   CDAWeb DATASET METADATA
+   HAPI /INFO
    ========================================================= */
 
 async function getDatasetMetadata() {
 
   const url =
-    new URL(`${API}/info`);
+    new URL(
+      `${API}/info`
+    );
+
 
   url.searchParams.set(
     "id",
@@ -273,52 +265,35 @@ async function getDatasetMetadata() {
   );
 
 
-  const response =
-    await fetch(
-      url.toString(),
-      {
-        method: "GET",
-        headers: {
-          "Accept": "application/json"
-        },
-        cache: "no-store"
-      }
+  const metadata =
+    await requestJson(url);
+
+
+  if (
+    !metadata ||
+    !Array.isArray(
+      metadata.parameters
+    )
+  ) {
+
+    throw new Error(
+      "CDAWeb HAPI metadata did not contain a parameter list."
     );
-
-
-  if (!response.ok) {
-
-    let message =
-      `CDAWeb metadata request failed: HTTP ${response.status}`;
-
-    try {
-
-      const text =
-        await response.text();
-
-      if (text) {
-        message += ` — ${text}`;
-      }
-
-    } catch (_) {
-      /* Ignore response parsing errors. */
-    }
-
-    throw new Error(message);
   }
 
 
-  const metadata =
-    await response.json();
-
-
+  /*
+   * Dataset coverage.
+   *
+   * HAPI/CDAWeb supplies these as dataset metadata.
+   */
   if (
     !metadata.startDate ||
     !metadata.stopDate
   ) {
 
     throw new Error(
-      "CDAWeb metadata does not contain startDate/stopDate."
+      "CDAWeb HAPI metadata did not contain startDate/stopDate."
     );
   }
 
@@ -335,8 +310,12 @@ async function getDatasetMetadata() {
 
 
   if (
-    !Number.isFinite(DATASET_START) ||
-    !Number.isFinite(DATASET_END)
+    !Number.isFinite(
+      DATASET_START
+    ) ||
+    !Number.isFinite(
+      DATASET_END
+    )
   ) {
 
     throw new Error(
@@ -346,7 +325,8 @@ async function getDatasetMetadata() {
 
 
   if (
-    DATASET_END < DATASET_START
+    DATASET_END <
+    DATASET_START
   ) {
 
     throw new Error(
@@ -355,7 +335,70 @@ async function getDatasetMetadata() {
   }
 
 
+  HAPI_METADATA =
+    metadata;
+
+
+  /*
+   * Identify the actual HAPI time parameter.
+   *
+   * We do NOT assume that it is called "Time".
+   */
+  TIME_PARAMETER =
+    metadata.parameters.find(
+      parameter =>
+        parameter &&
+        (
+          parameter.type ===
+          "isotime"
+          ||
+          parameter.type ===
+          "isotime"
+        )
+    );
+
+
+  /*
+   * Find the actual spectra_e_mix parameter.
+   */
+  SPECTRUM_PARAMETER =
+    metadata.parameters.find(
+      parameter =>
+        parameter &&
+        parameter.name ===
+        SPECTRUM
+    );
+
+
+  if (!TIME_PARAMETER) {
+
+    /*
+     * HAPI datasets normally put the time parameter first.
+     * Use that only as a fallback.
+     */
+    TIME_PARAMETER =
+      metadata.parameters[0];
+  }
+
+
+  if (!TIME_PARAMETER) {
+
+    throw new Error(
+      "Unable to identify the CDAWeb time parameter."
+    );
+  }
+
+
+  if (!SPECTRUM_PARAMETER) {
+
+    throw new Error(
+      `CDAWeb metadata does not contain ${SPECTRUM}.`
+    );
+  }
+
+
   updateCoverageLabel();
+
 
   return metadata;
 }
@@ -381,9 +424,65 @@ function updateCoverageLabel() {
 
   element.textContent =
     "CDAWeb dataset coverage: " +
-    formatUtc(DATASET_START) +
-    " → " +
-    formatUtc(DATASET_END);
+    `${formatUtc(DATASET_START)} → ` +
+    `${formatUtc(DATASET_END)}`;
+}
+
+
+/* =========================================================
+   HAPI /DATA
+   ========================================================= */
+
+async function getData(
+  startMs,
+  endMs
+) {
+
+  const url =
+    new URL(
+      `${API}/data`
+    );
+
+
+  url.searchParams.set(
+    "id",
+    DATASET
+  );
+
+
+  url.searchParams.set(
+    "time.min",
+    iso(startMs)
+  );
+
+
+  url.searchParams.set(
+    "time.max",
+    iso(endMs)
+  );
+
+
+  /*
+   * IMPORTANT:
+   *
+   * We intentionally do NOT send:
+   *
+   *     parameters=Time,spectra_e_mix
+   *
+   * because the CDAWeb HAPI endpoint has been returning
+   * parameter-related 400/500 errors for this dataset.
+   *
+   * HAPI documentation says that parameter selection is
+   * optional, so the request below asks for the default
+   * complete record.
+   */
+  url.searchParams.set(
+    "format",
+    "json"
+  );
+
+
+  return requestJson(url);
 }
 
 
@@ -393,54 +492,45 @@ function updateCoverageLabel() {
 
 async function findLatestObservation() {
 
-  /*
-   * Load dataset coverage if it has not already been loaded.
-   */
   if (
     DATASET_START === null ||
     DATASET_END === null
   ) {
+
     await getDatasetMetadata();
   }
 
 
   /*
-   * Query a small verification interval around stopDate.
+   * Query the final 24 hours of the actual dataset coverage.
    *
-   * We intentionally do not use the computer's current time.
+   * We are NOT using the current computer time.
    */
-  const verificationWindowMs =
-    24 * 60 * 60 * 1000;
+  const verificationWindow =
+    24 *
+    60 *
+    60 *
+    1000;
 
 
   const searchStart =
     Math.max(
       DATASET_START,
-      DATASET_END - verificationWindowMs
+      DATASET_END -
+      verificationWindow
     );
 
 
-  /*
-   * Add one second so an observation exactly at stopDate
-   * is not excluded by the upper time boundary.
-   */
   const searchEnd =
-    DATASET_END + 1000;
+    DATASET_END +
+    1000;
 
 
   const json =
-  await hapi({
-    id: DATASET,
-
-    "time.min":
-      iso(searchStart),
-
-    "time.max":
-      iso(searchEnd),
-
-    format:
-      "json"
-  });
+    await getData(
+      searchStart,
+      searchEnd
+    );
 
 
   const rows =
@@ -449,55 +539,157 @@ async function findLatestObservation() {
       : [];
 
 
-  /*
-   * Normally we expect actual Time records here.
-   */
-  if (rows.length > 0) {
+  if (rows.length === 0) {
 
-    const timestamps =
-      rows
-        .map(row => {
+    /*
+     * The metadata stopDate is still the authoritative
+     * dataset endpoint if the endpoint query happens to
+     * return no rows.
+     */
+    LATEST_OBSERVATION =
+      DATASET_END;
 
-          if (!Array.isArray(row)) {
-            return NaN;
-          }
-
-          return Date.parse(row[0]);
-
-        })
-        .filter(
-          Number.isFinite
-        );
+    return LATEST_OBSERVATION;
+  }
 
 
-    if (timestamps.length > 0) {
+  const timeIndex =
+    getParameterIndex(
+      TIME_PARAMETER.name
+    );
 
-      LATEST_OBSERVATION =
-        Math.max(...timestamps);
 
-      return LATEST_OBSERVATION;
+  const timestamps = [];
+
+
+  for (const row of rows) {
+
+    if (
+      !Array.isArray(row) ||
+      timeIndex < 0 ||
+      timeIndex >= row.length
+    ) {
+      continue;
+    }
+
+
+    const timestamp =
+      parseHapiTime(
+        row[timeIndex]
+      );
+
+
+    if (
+      Number.isFinite(timestamp)
+    ) {
+      timestamps.push(timestamp);
     }
   }
 
 
-  /*
-   * If the verification request returned no Time records,
-   * fall back to the dataset's authoritative metadata endpoint.
-   */
+  if (timestamps.length === 0) {
+
+    /*
+     * If HAPI did not give us a parseable timestamp,
+     * use stopDate rather than the computer clock.
+     */
+    LATEST_OBSERVATION =
+      DATASET_END;
+
+    return LATEST_OBSERVATION;
+  }
+
+
   LATEST_OBSERVATION =
-    DATASET_END;
+    Math.max(
+      ...timestamps
+    );
+
 
   return LATEST_OBSERVATION;
 }
 
 
 /* =========================================================
-   SET LATEST INTERVAL
+   PARAMETER INDEX
+   ========================================================= */
+
+function getParameterIndex(name) {
+
+  if (
+    !HAPI_METADATA ||
+    !Array.isArray(
+      HAPI_METADATA.parameters
+    )
+  ) {
+    return -1;
+  }
+
+
+  return HAPI_METADATA.parameters.findIndex(
+    parameter =>
+      parameter &&
+      parameter.name === name
+  );
+}
+
+
+/* =========================================================
+   HAPI TIME PARSER
+   ========================================================= */
+
+function parseHapiTime(value) {
+
+  if (
+    value === null ||
+    value === undefined
+  ) {
+    return NaN;
+  }
+
+
+  /*
+   * HAPI ISO time normally arrives as a string.
+   */
+  if (
+    typeof value === "string"
+  ) {
+
+    const milliseconds =
+      Date.parse(value);
+
+    if (
+      Number.isFinite(
+        milliseconds
+      )
+    ) {
+      return milliseconds;
+    }
+  }
+
+
+  /*
+   * Some APIs can expose a Date-like value.
+   */
+  if (
+    value instanceof Date
+  ) {
+    return value.getTime();
+  }
+
+
+  return NaN;
+}
+
+
+/* =========================================================
+   LATEST INTERVAL
    ========================================================= */
 
 async function loadLatest(hours) {
 
   disableButtons(true);
+
 
   try {
 
@@ -525,13 +717,11 @@ async function loadLatest(hours) {
       latest;
 
 
-    /*
-     * Never request data before the dataset begins.
-     */
     const startMs =
       Math.max(
         DATASET_START,
-        endMs - durationMs
+        endMs -
+        durationMs
       );
 
 
@@ -540,116 +730,6 @@ async function loadLatest(hours) {
       startMs
     );
 
-    setInputDate(
-      "endTime",
-      endMs
-    );
-
-
-    await loadSelected();
-
-  } catch (error) {
-
-    console.error(error);
-
-    setStatus(
-      `CDAWeb error: ${error.message}`,
-      true
-    );
-
-    showPlotMessage(
-      error.message
-    );
-
-  } finally {
-
-    disableButtons(false);
-  }
-}
-
-
-/* =========================================================
-   LOAD MANUALLY SELECTED INTERVAL
-   ========================================================= */
-
-async function loadSelected() {
-
-  disableButtons(true);
-
-  try {
-
-    /*
-     * Make sure the real dataset coverage is known.
-     */
-    if (
-      DATASET_START === null ||
-      DATASET_END === null
-    ) {
-      await getDatasetMetadata();
-    }
-
-
-    let startMs =
-      parseInputDate(
-        "startTime"
-      );
-
-    let endMs =
-      parseInputDate(
-        "endTime"
-      );
-
-
-    if (
-      !Number.isFinite(startMs) ||
-      !Number.isFinite(endMs)
-    ) {
-
-      throw new Error(
-        "Please enter valid UTC start and end times."
-      );
-    }
-
-
-    if (endMs <= startMs) {
-
-      throw new Error(
-        "End time must be later than start time."
-      );
-    }
-
-
-    /*
-     * Clip manual selections to actual CDAWeb coverage.
-     */
-    startMs =
-      Math.max(
-        startMs,
-        DATASET_START
-      );
-
-    endMs =
-      Math.min(
-        endMs,
-        DATASET_END
-      );
-
-
-    if (endMs <= startMs) {
-
-      throw new Error(
-        "The selected interval is outside the CDAWeb dataset coverage."
-      );
-    }
-
-
-    /*
-     * Show the effective interval in the controls.
-     */
-    setInputDate(
-      "startTime",
-      startMs
-    );
 
     setInputDate(
       "endTime",
@@ -657,90 +737,7 @@ async function loadSelected() {
     );
 
 
-    setStatus(
-      "Loading CDAWeb data…"
-    );
-
-    showPlotMessage(
-      "Loading CDAWeb data…"
-    );
-
-
-    const json =
-      await hapi({
-        id: DATASET,
-
-        "time.min":
-          iso(startMs),
-
-        "time.max":
-          iso(endMs),
-   
-         parameters:
-              SPECTRUM,
-
-        format:
-          "json"
-      });
-
-
-    const rows =
-      Array.isArray(json.data)
-        ? json.data
-        : [];
-
-
-    if (rows.length === 0) {
-
-      throw new Error(
-        "CDAWeb returned no data for the selected interval."
-      );
-    }
-
-
-    /*
-     * Convert HAPI records into plotting data.
-     */
-    const records =
-      parseRecords(rows);
-
-
-    if (records.length === 0) {
-
-      throw new Error(
-        "CDAWeb returned records, but no valid spectra were found."
-      );
-    }
-
-
-    currentData = {
-      records,
-      startMs,
-      endMs
-    };
-
-
-    drawSpectrogram(
-      currentData
-    );
-
-
-    updateRangeLabel(
-      startMs,
-      endMs
-    );
-
-
-    updateStats(
-      records
-    );
-
-
-    hidePlotMessage();
-
-
-    setStatus(
-      "CDAWeb data loaded",
+    await loadSelected(
       false
     );
 
@@ -748,7 +745,8 @@ async function loadSelected() {
 
     console.error(error);
 
-    currentData = null;
+    CURRENT_DATA =
+      null;
 
     clearCanvas();
 
@@ -769,6 +767,221 @@ async function loadSelected() {
 
 
 /* =========================================================
+   MANUAL / SELECTED INTERVAL
+   ========================================================= */
+
+async function loadSelected(
+  manageButtons = true
+) {
+
+  if (manageButtons) {
+    disableButtons(true);
+  }
+
+
+  try {
+
+    /*
+     * Always know the real CDAWeb coverage.
+     */
+    if (
+      DATASET_START === null ||
+      DATASET_END === null ||
+      !SPECTRUM_PARAMETER ||
+      !TIME_PARAMETER
+    ) {
+
+      await getDatasetMetadata();
+    }
+
+
+    let startMs =
+      parseInputDate(
+        "startTime"
+      );
+
+
+    let endMs =
+      parseInputDate(
+        "endTime"
+      );
+
+
+    if (
+      !Number.isFinite(startMs) ||
+      !Number.isFinite(endMs)
+    ) {
+
+      throw new Error(
+        "Please enter valid UTC start and end times."
+      );
+    }
+
+
+    if (
+      endMs <= startMs
+    ) {
+
+      throw new Error(
+        "End time must be later than start time."
+      );
+    }
+
+
+    /*
+     * Clip manual intervals to actual dataset coverage.
+     */
+    startMs =
+      Math.max(
+        startMs,
+        DATASET_START
+      );
+
+
+    endMs =
+      Math.min(
+        endMs,
+        DATASET_END
+      );
+
+
+    if (
+      endMs <= startMs
+    ) {
+
+      throw new Error(
+        "The selected interval is outside the CDAWeb dataset coverage."
+      );
+    }
+
+
+    setInputDate(
+      "startTime",
+      startMs
+    );
+
+
+    setInputDate(
+      "endTime",
+      endMs
+    );
+
+
+    setStatus(
+      "Loading CDAWeb data…"
+    );
+
+    showPlotMessage(
+      "Loading CDAWeb data…"
+    );
+
+
+    /*
+     * Request the data.
+     *
+     * No "parameters=Time..." is sent.
+     * CDAWeb returns the default HAPI record.
+     */
+    const json =
+      await getData(
+        startMs,
+        endMs
+      );
+
+
+    const rows =
+      Array.isArray(json.data)
+        ? json.data
+        : [];
+
+
+    if (
+      rows.length === 0
+    ) {
+
+      throw new Error(
+        "CDAWeb returned no data for the selected interval."
+      );
+    }
+
+
+    /*
+     * Convert the HAPI records into plotting records.
+     */
+    const records =
+      parseRecords(
+        rows
+      );
+
+
+    if (
+      records.length === 0
+    ) {
+
+      throw new Error(
+        "CDAWeb returned records, but no valid spectra_e_mix spectra were found."
+      );
+    }
+
+
+    CURRENT_DATA = {
+      records,
+      startMs,
+      endMs
+    };
+
+
+    drawSpectrogram(
+      CURRENT_DATA
+    );
+
+
+    updateRangeLabel(
+      startMs,
+      endMs
+    );
+
+
+    updateStats(
+      records
+    );
+
+
+    hidePlotMessage();
+
+
+    setStatus(
+      "CDAWeb data loaded"
+    );
+
+  } catch (error) {
+
+    console.error(error);
+
+    CURRENT_DATA =
+      null;
+
+    clearCanvas();
+
+    setStatus(
+      `CDAWeb error: ${error.message}`,
+      true
+    );
+
+    showPlotMessage(
+      error.message
+    );
+
+  } finally {
+
+    if (manageButtons) {
+      disableButtons(false);
+    }
+  }
+}
+
+
+/* =========================================================
    PARSE HAPI RECORDS
    ========================================================= */
 
@@ -777,31 +990,73 @@ function parseRecords(rows) {
   const records = [];
 
 
-  for (const row of rows) {
+  const timeIndex =
+    getParameterIndex(
+      TIME_PARAMETER.name
+    );
 
-    if (!Array.isArray(row)) {
+
+  const spectrumIndex =
+    getParameterIndex(
+      SPECTRUM_PARAMETER.name
+    );
+
+
+  if (
+    timeIndex < 0
+  ) {
+
+    throw new Error(
+      `Unable to locate time parameter "${TIME_PARAMETER.name}" in HAPI metadata.`
+    );
+  }
+
+
+  if (
+    spectrumIndex < 0
+  ) {
+
+    throw new Error(
+      `Unable to locate ${SPECTRUM} in HAPI metadata.`
+    );
+  }
+
+
+  for (
+    const row of rows
+  ) {
+
+    if (
+      !Array.isArray(row)
+    ) {
       continue;
     }
 
 
-    /*
-     * HAPI JSON:
-     *
-     * row[0] = Time
-     * row[1] = spectra_e_mix
-     */
+    if (
+      timeIndex >= row.length ||
+      spectrumIndex >= row.length
+    ) {
+      continue;
+    }
+
+
     const timestamp =
-      Date.parse(row[0]);
+      parseHapiTime(
+        row[timeIndex]
+      );
 
 
-    if (!Number.isFinite(timestamp)) {
+    if (
+      !Number.isFinite(timestamp)
+    ) {
       continue;
     }
 
 
     const spectrum =
       normalizeSpectrum(
-        row[1]
+        row[spectrumIndex]
       );
 
 
@@ -814,8 +1069,11 @@ function parseRecords(rows) {
 
 
     records.push({
-      time: timestamp,
-      spectrum
+      time:
+        timestamp,
+
+      spectrum:
+        spectrum
     });
   }
 
@@ -831,7 +1089,7 @@ function parseRecords(rows) {
 
 
 /* =========================================================
-   NORMALIZE SPECTRUM
+   NORMALIZE SPECTRUM ARRAY
    ========================================================= */
 
 function normalizeSpectrum(value) {
@@ -845,39 +1103,41 @@ function normalizeSpectrum(value) {
 
 
   /*
-   * Standard HAPI array.
+   * Normal HAPI array.
    */
-  if (Array.isArray(value)) {
+  if (
+    Array.isArray(value)
+  ) {
 
     return value.map(
-      Number
+      item => Number(item)
     );
   }
 
 
   /*
-   * Some HAPI/CDAWeb representations may expose
-   * nested arrays. Flatten them.
+   * Handle nested arrays.
    */
   if (
-    typeof value === "object"
+    typeof value ===
+    "object"
   ) {
 
-    const flattened = [];
+    const output = [];
 
     flattenArray(
       value,
-      flattened
+      output
     );
 
-    return flattened.map(
-      Number
+    return output.map(
+      item => Number(item)
     );
   }
 
 
   /*
-   * Scalar value.
+   * Scalar fallback.
    */
   const number =
     Number(value);
@@ -886,7 +1146,10 @@ function normalizeSpectrum(value) {
   if (
     Number.isFinite(number)
   ) {
-    return [number];
+
+    return [
+      number
+    ];
   }
 
 
@@ -894,11 +1157,18 @@ function normalizeSpectrum(value) {
 }
 
 
-function flattenArray(value, output) {
+function flattenArray(
+  value,
+  output
+) {
 
-  if (Array.isArray(value)) {
+  if (
+    Array.isArray(value)
+  ) {
 
-    for (const item of value) {
+    for (
+      const item of value
+    ) {
 
       flattenArray(
         item,
@@ -956,7 +1226,9 @@ function updateStats(records) {
   }
 
 
-  if (records.length === 0) {
+  if (
+    records.length === 0
+  ) {
 
     element.textContent =
       "No valid spectra";
@@ -965,7 +1237,7 @@ function updateStats(records) {
   }
 
 
-  const frequencies =
+  const binCounts =
     records.map(
       record =>
         record.spectrum.length
@@ -973,17 +1245,25 @@ function updateStats(records) {
 
 
   const minBins =
-    Math.min(...frequencies);
+    Math.min(
+      ...binCounts
+    );
+
 
   const maxBins =
-    Math.max(...frequencies);
+    Math.max(
+      ...binCounts
+    );
+
+
+  const binText =
+    minBins === maxBins
+      ? `${minBins} frequency bins`
+      : `${minBins}–${maxBins} frequency bins`;
 
 
   element.textContent =
-    `${records.length.toLocaleString()} spectra · ` +
-    `${minBins === maxBins
-      ? minBins
-      : `${minBins}–${maxBins}`} frequency bins`;
+    `${records.length.toLocaleString()} spectra · ${binText}`;
 }
 
 
@@ -991,23 +1271,20 @@ function updateStats(records) {
    CANVAS
    ========================================================= */
 
-function clearCanvas() {
+function prepareCanvas() {
 
   const canvas =
     $("spectrogram");
 
   if (!canvas) {
-    return;
+    return null;
   }
-
-
-  const context =
-    canvas.getContext("2d");
 
 
   const width =
     canvas.clientWidth ||
     800;
+
 
   const height =
     canvas.clientHeight ||
@@ -1024,9 +1301,16 @@ function clearCanvas() {
       width * ratio
     );
 
+
   canvas.height =
     Math.round(
       height * ratio
+    );
+
+
+  const context =
+    canvas.getContext(
+      "2d"
     );
 
 
@@ -1048,8 +1332,35 @@ function clearCanvas() {
   );
 
 
+  return {
+    canvas,
+    context,
+    width,
+    height
+  };
+}
+
+
+function clearCanvas() {
+
+  const prepared =
+    prepareCanvas();
+
+  if (!prepared) {
+    return;
+  }
+
+
+  const {
+    context,
+    width,
+    height
+  } = prepared;
+
+
   context.fillStyle =
     "#02070b";
+
 
   context.fillRect(
     0,
@@ -1061,24 +1372,16 @@ function clearCanvas() {
 
 
 /* =========================================================
-   DRAW SPECTROGRAM
+   SPECTROGRAM
    ========================================================= */
 
 function drawSpectrogram(data) {
 
-  const canvas =
-    $("spectrogram");
-
-  if (!canvas) {
-    return;
-  }
-
-
-  const records =
-    data.records;
-
-
-  if (!records.length) {
+  if (
+    !data ||
+    !data.records ||
+    data.records.length === 0
+  ) {
 
     clearCanvas();
 
@@ -1086,55 +1389,29 @@ function drawSpectrogram(data) {
   }
 
 
-  const width =
-    canvas.clientWidth ||
-    800;
-
-  const height =
-    canvas.clientHeight ||
-    520;
+  const prepared =
+    prepareCanvas();
 
 
-  const ratio =
-    window.devicePixelRatio ||
-    1;
+  if (!prepared) {
+    return;
+  }
 
 
-  canvas.width =
-    Math.round(
-      width * ratio
-    );
-
-  canvas.height =
-    Math.round(
-      height * ratio
-    );
-
-
-  const context =
-    canvas.getContext("2d");
-
-
-  context.setTransform(
-    ratio,
-    0,
-    0,
-    ratio,
-    0,
-    0
-  );
-
-
-  context.clearRect(
-    0,
-    0,
+  const {
+    context,
     width,
     height
-  );
+  } = prepared;
+
+
+  const records =
+    data.records;
 
 
   context.fillStyle =
     "#02070b";
+
 
   context.fillRect(
     0,
@@ -1145,7 +1422,7 @@ function drawSpectrogram(data) {
 
 
   /*
-   * Determine the maximum spectrum length.
+   * Determine maximum number of spectral bins.
    */
   const bins =
     Math.max(
@@ -1156,19 +1433,23 @@ function drawSpectrogram(data) {
     );
 
 
-  if (bins <= 0) {
+  if (
+    !Number.isFinite(bins) ||
+    bins <= 0
+  ) {
     return;
   }
 
 
   /*
-   * We draw one vertical column per available
-   * screen pixel. This prevents huge historical
-   * datasets from creating millions of canvas operations.
+   * We draw at most one column per screen pixel.
    */
   const columns =
     Math.min(
-      width,
+      Math.max(
+        1,
+        Math.floor(width)
+      ),
       records.length
     );
 
@@ -1179,7 +1460,7 @@ function drawSpectrogram(data) {
 
 
   /*
-   * Calculate log-scaled values.
+   * Determine log-power range.
    */
   let minValue =
     Infinity;
@@ -1188,9 +1469,17 @@ function drawSpectrogram(data) {
     -Infinity;
 
 
-  for (const record of records) {
+  for (
+    const record of records
+  ) {
 
-    for (const value of record.spectrum) {
+    for (
+      const rawValue of record.spectrum
+    ) {
+
+      const value =
+        Number(rawValue);
+
 
       if (
         Number.isFinite(value) &&
@@ -1200,11 +1489,13 @@ function drawSpectrogram(data) {
         const logValue =
           Math.log10(value);
 
+
         minValue =
           Math.min(
             minValue,
             logValue
           );
+
 
         maxValue =
           Math.max(
@@ -1222,22 +1513,26 @@ function drawSpectrogram(data) {
   ) {
 
     showPlotMessage(
-      "The selected CDAWeb interval contains no finite positive spectral values."
+      "The selected interval contains no finite positive spectral values."
     );
 
     return;
   }
 
 
-  if (maxValue <= minValue) {
+  if (
+    maxValue <= minValue
+  ) {
+
     maxValue =
       minValue + 1;
   }
 
 
   /*
-   * Draw from low frequency at bottom
-   * to high frequency at top.
+   * Draw spectrum.
+   *
+   * This is a compact client-side rendering method.
    */
   for (
     let column = 0;
@@ -1248,6 +1543,7 @@ function drawSpectrogram(data) {
     const recordIndex =
       Math.min(
         records.length - 1,
+
         Math.floor(
           column *
           recordsPerColumn
@@ -1255,20 +1551,14 @@ function drawSpectrogram(data) {
       );
 
 
-    const record =
-      records[recordIndex];
-
-
     const spectrum =
-      record.spectrum;
+      records[
+        recordIndex
+      ].spectrum;
 
 
-    const x0 =
+    const x =
       column;
-
-
-    const x1 =
-      column + 1;
 
 
     for (
@@ -1317,8 +1607,7 @@ function drawSpectrogram(data) {
 
 
       /*
-       * Simple scientific false-colour scale:
-       * dark blue -> cyan -> yellow -> red.
+       * Blue → cyan → yellow → red.
        */
       const hue =
         240 -
@@ -1330,7 +1619,7 @@ function drawSpectrogram(data) {
 
 
       /*
-       * Flip Y so low bins are at bottom.
+       * Low spectral bins at the bottom.
        */
       const y =
         height -
@@ -1349,9 +1638,9 @@ function drawSpectrogram(data) {
 
 
       context.fillRect(
-        x0,
+        x,
         y,
-        Math.max(1, x1 - x0),
+        1.2,
         binHeight
       );
     }
@@ -1359,10 +1648,11 @@ function drawSpectrogram(data) {
 
 
   /*
-   * Overlay subtle horizontal grid lines.
+   * Horizontal grid.
    */
   context.strokeStyle =
     "rgba(255,255,255,0.08)";
+
 
   context.lineWidth =
     1;
@@ -1403,10 +1693,11 @@ function drawSpectrogram(data) {
 
 
   /*
-   * Draw a thin border.
+   * Border.
    */
   context.strokeStyle =
     "rgba(255,255,255,0.14)";
+
 
   context.strokeRect(
     0.5,
@@ -1431,7 +1722,9 @@ function disableButtons(disabled) {
   ];
 
 
-  for (const id of ids) {
+  for (
+    const id of ids
+  ) {
 
     const element =
       $(id);
@@ -1445,11 +1738,11 @@ function disableButtons(disabled) {
 
 
 /* =========================================================
-   BUTTON EVENTS
+   EVENT HANDLERS
    ========================================================= */
 
 $("latest24")
-  .addEventListener(
+  ?.addEventListener(
     "click",
     () =>
       loadLatest(24)
@@ -1457,7 +1750,7 @@ $("latest24")
 
 
 $("latest48")
-  .addEventListener(
+  ?.addEventListener(
     "click",
     () =>
       loadLatest(48)
@@ -1465,7 +1758,7 @@ $("latest48")
 
 
 $("latest7d")
-  .addEventListener(
+  ?.addEventListener(
     "click",
     () =>
       loadLatest(24 * 7)
@@ -1473,7 +1766,7 @@ $("latest7d")
 
 
 $("loadButton")
-  .addEventListener(
+  ?.addEventListener(
     "click",
     () =>
       loadSelected()
@@ -1481,7 +1774,7 @@ $("loadButton")
 
 
 /* =========================================================
-   WINDOW RESIZE
+   RESIZE
    ========================================================= */
 
 window.addEventListener(
@@ -1497,10 +1790,10 @@ window.addEventListener(
       setTimeout(
         () => {
 
-          if (currentData) {
+          if (CURRENT_DATA) {
 
             drawSpectrogram(
-              currentData
+              CURRENT_DATA
             );
           }
 
@@ -1523,21 +1816,21 @@ async function initialize() {
       "Reading CDAWeb metadata…"
     );
 
+
     showPlotMessage(
       "Reading CDAWeb dataset coverage…"
     );
 
 
     /*
-     * This obtains startDate and stopDate from
-     * the actual HAPI dataset metadata.
+     * First read the actual metadata.
      */
     await getDatasetMetadata();
 
 
     /*
-     * Automatically open on the newest available
-     * 24-hour interval.
+     * Then determine the newest actual observation
+     * and automatically display its latest 24 hours.
      */
     await loadLatest(24);
 
@@ -1550,6 +1843,7 @@ async function initialize() {
       true
     );
 
+
     showPlotMessage(
       error.message
     );
@@ -1558,7 +1852,7 @@ async function initialize() {
 
 
 /* =========================================================
-   START
+   START APPLICATION
    ========================================================= */
 
 initialize();
