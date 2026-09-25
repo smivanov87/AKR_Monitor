@@ -23,7 +23,7 @@
    *
    * This is NOT the data interval displayed.
    */
-  const SEARCH_HOURS = 72;
+  const SEARCH_HOURS = 24 * 365 * 2;
 
 
   const $ = id =>
