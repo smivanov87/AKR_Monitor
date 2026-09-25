@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="AKR Monitor — Arase/ERG PWE-HFA electric-field spectrum monitor">
+  <title>AKR Monitor | Arase / ERG PWE-HFA</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <div class="eyebrow">SPACE WEATHER • RADIO & PLASMA WAVES</div>
+      <h1>AKR Monitor</h1>
+      <p class="subtitle">Arase / ERG — Plasma Wave Experiment (PWE) • HFA Level-2 electric-field spectra</p>
+    </div>
+    <div class="status-wrap">
+      <span id="statusDot" class="status-dot"></span>
+      <span id="statusText">Demo data</span>
+    </div>
+  </header>
+
+  <main class="page">
+    <section class="control-panel">
+      <div class="control">
+        <label for="dateSelect">Observation date</label>
+        <select id="dateSelect">
+          <option value="demo">Demo spectrum</option>
+          <option value="2017-11-10">2017-11-10</option>
+        </select>
+      </div>
+      <div class="control">
+        <label for="rangeSelect">Frequency range</label>
+        <select id="rangeSelect">
+          <option value="20-650">20–650 kHz</option>
+          <option value="10-1000">10–1000 kHz</option>
+          <option value="10-10000">10 kHz–10 MHz</option>
+        </select>
+      </div>
+      <div class="control">
+        <label for="scaleSelect">Colour scale</label>
+        <select id="scaleSelect">
+          <option value="percentile">10th–90th percentile</option>
+          <option value="full">Full range</option>
+        </select>
+      </div>
+      <button id="reloadBtn" class="button">Reload data</button>
+    </section>
+
+    <section class="hero-card">
+      <div class="plot-head">
+        <div>
+          <h2 id="plotTitle">AKR electric-field spectrum</h2>
+          <p id="plotMeta">Demo data • logarithmic frequency axis</p>
+        </div>
+        <div class="legend-note">Power spectrum: <span class="math">E<sub>mix</sub></span></div>
+      </div>
+
+      <div class="plot-layout">
+        <div class="y-label">Frequency (kHz)</div>
+        <div class="plot-area">
+          <canvas id="spectrogram"></canvas>
+          <div class="x-axis"><span id="xStart">00:00</span><span>Time (UTC)</span><span id="xEnd">24:00</span></div>
+        </div>
+        <div class="colorbar-wrap">
+          <canvas id="colorbar"></canvas>
+          <div class="cb-labels"><span id="cbMax">high</span><span id="cbMid">medium</span><span id="cbMin">low</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="info-grid">
+      <article class="info-card">
+        <h3>Data product</h3>
+        <dl>
+          <div><dt>Mission</dt><dd>Arase (ERG)</dd></div>
+          <div><dt>Instrument</dt><dd>PWE / HFA</dd></div>
+          <div><dt>Product</dt><dd>ERG_PWE_HFA_L2_SPEC_HIGH</dd></div>
+          <div><dt>Primary variable</dt><dd><code>spectra_e_mix</code></dd></div>
+        </dl>
+      </article>
+
+      <article class="info-card">
+        <h3>About this monitor</h3>
+        <p>
+          This page is designed as a lightweight demonstration of auroral kilometric radiation
+          (AKR) observations using Arase PWE-HFA spectra. The front end reads a compact JSON
+          product, so it can be hosted directly on GitHub Pages.
+        </p>
+      </article>
+
+      <article class="info-card">
+        <h3>Data status</h3>
+        <p id="dataMessage">
+          The repository currently contains a built-in demonstration spectrum. The updater can
+          replace <code>data/akr.json</code> with regularly retrieved CDAWeb/HAPI data.
+        </p>
+      </article>
+    </section>
+
+    <footer>
+      <span>AKR Monitor</span>
+      <span>Arase / ERG PWE-HFA • Data access via NASA CDAWeb</span>
+    </footer>
+  </main>
+
+  <script src="script.js"></script>
+</body>
+</html>
