@@ -2,65 +2,106 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description"
-        content="Arase/ERG PWE-HFA Level-2 AKR monitor using NASA CDAWeb HAPI">
+
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1">
+
+  <meta
+    name="description"
+    content="Arase/ERG PWE-HFA Level-2 AKR monitor using NASA CDAWeb HAPI">
+
   <title>AKR Monitor — Arase / ERG PWE-HFA</title>
-  <link rel="stylesheet" href="style.css">
+
+  <link
+    rel="stylesheet"
+    href="style.css">
 </head>
 
 <body>
 
 <header class="site-header">
+
   <div class="container author">
-    <div>
-      <strong>Serhii M. Ivanov</strong>
-      <span>PhD in Physical and Mathematical Sciences</span>
+
+    <div class="author-info">
+
+      <strong>
+        Serhii M. Ivanov
+      </strong>
+
+      <span>
+        PhD in Physical and Mathematical Sciences
+      </span>
+
     </div>
 
     <nav aria-label="Author links">
-      <a href="https://orcid.org/0000-0002-4339-9192"
-         target="_blank"
-         rel="noopener">
+
+      <a
+        href="https://orcid.org/0000-0002-4339-9192"
+        target="_blank"
+        rel="noopener noreferrer">
         ORCID
       </a>
 
-      <a href="https://github.com/smivanov87"
-         target="_blank"
-         rel="noopener">
+      <a
+        href="https://github.com/smivanov87"
+        target="_blank"
+        rel="noopener noreferrer">
         GitHub
       </a>
+
     </nav>
+
   </div>
+
 </header>
 
 
 <main class="container">
 
-  <section class="hero">
-    <p class="eyebrow">SPACE WEATHER • RADIO &amp; PLASMA WAVES</p>
+  <!-- HERO -->
 
-    <h1>AKR Monitor</h1>
+  <section class="hero">
+
+    <p class="eyebrow">
+      SPACE WEATHER • RADIO &amp; PLASMA WAVES
+    </p>
+
+    <h1>
+      AKR Monitor
+    </h1>
 
     <p class="subtitle">
       Arase / ERG — Plasma Wave Experiment (PWE) •
       HFA Level-2 electric-field spectra
     </p>
+
   </section>
 
 
-  <!-- TIME CONTROLS -->
+  <!-- CONTROLS -->
 
   <section class="panel controls">
 
     <div class="panel-heading">
 
       <div>
-        <p class="eyebrow">NASA CDAWeb / HAPI</p>
-        <h2>Data time (UTC)</h2>
+
+        <p class="eyebrow">
+          NASA CDAWeb / HAPI
+        </p>
+
+        <h2>
+          Data time (UTC)
+        </h2>
+
       </div>
 
-      <span id="statusPill" class="status">
+      <span
+        id="statusPill"
+        class="status">
         Starting…
       </span>
 
@@ -70,19 +111,30 @@
     <div class="control-grid">
 
       <label>
-        <span>Start UTC</span>
+
+        <span>
+          Start UTC
+        </span>
+
         <input
           id="startTime"
           type="datetime-local"
           step="1">
+
       </label>
 
+
       <label>
-        <span>End UTC</span>
+
+        <span>
+          End UTC
+        </span>
+
         <input
           id="endTime"
           type="datetime-local"
           step="1">
+
       </label>
 
     </div>
@@ -90,38 +142,55 @@
 
     <div class="actions">
 
-      <button id="latest24" type="button">
+      <button
+        id="latest24"
+        type="button">
         Latest 24 h
       </button>
 
-      <button id="latest48" type="button">
+      <button
+        id="latest48"
+        type="button">
         Latest 48 h
       </button>
 
-      <button id="latest7d" type="button">
+      <button
+        id="latest7d"
+        type="button">
         Latest 7 days
       </button>
 
-      <button id="loadButton"
-              class="primary"
-              type="button">
+      <button
+        id="loadButton"
+        class="primary"
+        type="button">
         Load CDAWeb
       </button>
 
     </div>
 
 
+    <p
+      id="coverageLabel"
+      class="help">
+      Checking CDAWeb dataset coverage…
+    </p>
+
+
     <p class="help">
-      The “Latest” buttons first determine the newest observation
-      actually available in CDAWeb. They do not assume that the
-      current computer time is the latest available data time.
+
+      The Latest buttons first determine the newest observation
+      actually available in CDAWeb. They do not use the current
+      computer time as the data endpoint.
+
       Historical intervals can be entered manually.
+
     </p>
 
   </section>
 
 
-  <!-- DATA DISPLAY -->
+  <!-- SPECTROGRAM -->
 
   <section class="panel">
 
@@ -138,6 +207,7 @@
         </h2>
 
       </div>
+
 
       <div
         id="stats"
@@ -183,7 +253,10 @@
 
   <section class="panel notes">
 
-    <h2>Dataset</h2>
+    <h2>
+      Dataset
+    </h2>
+
 
     <p>
       <code>ERG_PWE_HFA_L2_SPEC_HIGH</code>
@@ -191,11 +264,20 @@
       <code>spectra_e_mix</code>
     </p>
 
+
     <p>
       NASA CDAWeb describes
-      <code>spectra_e_mix</code> as
+      <code>spectra_e_mix</code>
+      as
       “Power spectra Eu²+Ev² or Eu² or Ev²”.
     </p>
+
+
+    <p>
+      The <code>e_mix_content</code> variable identifies whether
+      the spectrum represents the combined, Eu, or Ev quantity.
+    </p>
+
 
     <p>
       Data are obtained directly from NASA CDAWeb through
