@@ -2,108 +2,225 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="description" content="AKR Monitor — Arase/ERG PWE-HFA electric-field spectrum monitor">
-  <title>AKR Monitor | Arase / ERG PWE-HFA</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description"
+        content="Arase/ERG PWE-HFA Level-2 AKR monitor using NASA CDAWeb HAPI">
+  <title>AKR Monitor — Arase / ERG PWE-HFA</title>
   <link rel="stylesheet" href="style.css">
 </head>
+
 <body>
-  <header class="topbar">
+
+<header class="site-header">
+  <div class="container author">
     <div>
-      <div class="eyebrow">SPACE WEATHER • RADIO & PLASMA WAVES</div>
-      <h1>AKR Monitor</h1>
-      <p class="subtitle">Arase / ERG — Plasma Wave Experiment (PWE) • HFA Level-2 electric-field spectra</p>
+      <strong>Serhii M. Ivanov</strong>
+      <span>PhD in Physical and Mathematical Sciences</span>
     </div>
-    <div class="status-wrap">
-      <span id="statusDot" class="status-dot"></span>
-      <span id="statusText">Demo data</span>
+
+    <nav aria-label="Author links">
+      <a href="https://orcid.org/0000-0002-4339-9192"
+         target="_blank"
+         rel="noopener">
+        ORCID
+      </a>
+
+      <a href="https://github.com/smivanov87"
+         target="_blank"
+         rel="noopener">
+        GitHub
+      </a>
+    </nav>
+  </div>
+</header>
+
+
+<main class="container">
+
+  <section class="hero">
+    <p class="eyebrow">SPACE WEATHER • RADIO &amp; PLASMA WAVES</p>
+
+    <h1>AKR Monitor</h1>
+
+    <p class="subtitle">
+      Arase / ERG — Plasma Wave Experiment (PWE) •
+      HFA Level-2 electric-field spectra
+    </p>
+  </section>
+
+
+  <!-- TIME CONTROLS -->
+
+  <section class="panel controls">
+
+    <div class="panel-heading">
+
+      <div>
+        <p class="eyebrow">NASA CDAWeb / HAPI</p>
+        <h2>Data time (UTC)</h2>
+      </div>
+
+      <span id="statusPill" class="status">
+        Starting…
+      </span>
+
     </div>
-  </header>
 
-  <main class="page">
-    <section class="control-panel">
-      <div class="control">
-        <label for="dateSelect">Observation date</label>
-        <select id="dateSelect">
-          <option value="demo">Demo spectrum</option>
-          <option value="2017-11-10">2017-11-10</option>
-        </select>
+
+    <div class="control-grid">
+
+      <label>
+        <span>Start UTC</span>
+        <input
+          id="startTime"
+          type="datetime-local"
+          step="1">
+      </label>
+
+      <label>
+        <span>End UTC</span>
+        <input
+          id="endTime"
+          type="datetime-local"
+          step="1">
+      </label>
+
+    </div>
+
+
+    <div class="actions">
+
+      <button id="latest24" type="button">
+        Latest 24 h
+      </button>
+
+      <button id="latest48" type="button">
+        Latest 48 h
+      </button>
+
+      <button id="latest7d" type="button">
+        Latest 7 days
+      </button>
+
+      <button id="loadButton"
+              class="primary"
+              type="button">
+        Load CDAWeb
+      </button>
+
+    </div>
+
+
+    <p class="help">
+      The “Latest” buttons first determine the newest observation
+      actually available in CDAWeb. They do not assume that the
+      current computer time is the latest available data time.
+      Historical intervals can be entered manually.
+    </p>
+
+  </section>
+
+
+  <!-- DATA DISPLAY -->
+
+  <section class="panel">
+
+    <div class="live-heading">
+
+      <div>
+
+        <span class="live-badge">
+          LIVE AVAILABLE CDAWeb DATA
+        </span>
+
+        <h2 id="rangeLabel">
+          Waiting for data…
+        </h2>
+
       </div>
-      <div class="control">
-        <label for="rangeSelect">Frequency range</label>
-        <select id="rangeSelect">
-          <option value="20-650">20–650 kHz</option>
-          <option value="10-1000">10–1000 kHz</option>
-          <option value="10-10000">10 kHz–10 MHz</option>
-        </select>
-      </div>
-      <div class="control">
-        <label for="scaleSelect">Colour scale</label>
-        <select id="scaleSelect">
-          <option value="percentile">10th–90th percentile</option>
-          <option value="full">Full range</option>
-        </select>
-      </div>
-      <button id="reloadBtn" class="button">Reload data</button>
-    </section>
 
-    <section class="hero-card">
-      <div class="plot-head">
-        <div>
-          <h2 id="plotTitle">AKR electric-field spectrum</h2>
-          <p id="plotMeta">Demo data • logarithmic frequency axis</p>
-        </div>
-        <div class="legend-note">Power spectrum: <span class="math">E<sub>mix</sub></span></div>
+      <div
+        id="stats"
+        class="stats">
+        —
       </div>
 
-      <div class="plot-layout">
-        <div class="y-label">Frequency (kHz)</div>
-        <div class="plot-area">
-          <canvas id="spectrogram"></canvas>
-          <div class="x-axis"><span id="xStart">00:00</span><span>Time (UTC)</span><span id="xEnd">24:00</span></div>
-        </div>
-        <div class="colorbar-wrap">
-          <canvas id="colorbar"></canvas>
-          <div class="cb-labels"><span id="cbMax">high</span><span id="cbMid">medium</span><span id="cbMin">low</span></div>
-        </div>
+    </div>
+
+
+    <div class="plot-wrap">
+
+      <canvas
+        id="spectrogram"
+        aria-label="Arase PWE-HFA electric-field spectrogram">
+      </canvas>
+
+      <div
+        id="plotMessage"
+        class="plot-message">
+        Loading CDAWeb data…
       </div>
-    </section>
 
-    <section class="info-grid">
-      <article class="info-card">
-        <h3>Data product</h3>
-        <dl>
-          <div><dt>Mission</dt><dd>Arase (ERG)</dd></div>
-          <div><dt>Instrument</dt><dd>PWE / HFA</dd></div>
-          <div><dt>Product</dt><dd>ERG_PWE_HFA_L2_SPEC_HIGH</dd></div>
-          <div><dt>Primary variable</dt><dd><code>spectra_e_mix</code></dd></div>
-        </dl>
-      </article>
+    </div>
 
-      <article class="info-card">
-        <h3>About this monitor</h3>
-        <p>
-          This page is designed as a lightweight demonstration of auroral kilometric radiation
-          (AKR) observations using Arase PWE-HFA spectra. The front end reads a compact JSON
-          product, so it can be hosted directly on GitHub Pages.
-        </p>
-      </article>
 
-      <article class="info-card">
-        <h3>Data status</h3>
-        <p id="dataMessage">
-          The repository currently contains a built-in demonstration spectrum. The updater can
-          replace <code>data/akr.json</code> with regularly retrieved CDAWeb/HAPI data.
-        </p>
-      </article>
-    </section>
+    <div class="axis-row">
 
-    <footer>
-      <span>AKR Monitor</span>
-      <span>Arase / ERG PWE-HFA • Data access via NASA CDAWeb</span>
-    </footer>
-  </main>
+      <span id="yLabel">
+        Frequency bin
+      </span>
 
-  <script src="script.js"></script>
+      <span>
+        Time (UTC)
+      </span>
+
+    </div>
+
+  </section>
+
+
+  <!-- DATASET INFORMATION -->
+
+  <section class="panel notes">
+
+    <h2>Dataset</h2>
+
+    <p>
+      <code>ERG_PWE_HFA_L2_SPEC_HIGH</code>
+      ·
+      <code>spectra_e_mix</code>
+    </p>
+
+    <p>
+      NASA CDAWeb describes
+      <code>spectra_e_mix</code> as
+      “Power spectra Eu²+Ev² or Eu² or Ev²”.
+    </p>
+
+    <p>
+      Data are obtained directly from NASA CDAWeb through
+      its HAPI service.
+    </p>
+
+  </section>
+
+
+  <footer>
+
+    <span>
+      AKR Monitor
+    </span>
+
+    <span>
+      Data: NASA CDAWeb / Arase (ERG) PWE-HFA
+    </span>
+
+  </footer>
+
+</main>
+
+
+<script src="script.js"></script>
+
 </body>
 </html>
