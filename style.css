@@ -5,6 +5,7 @@
 :root {
   --bg: #071018;
   --panel: #0d1822;
+  --panel-dark: #08131c;
   --text: #e7eef5;
   --muted: #91a4b5;
   --line: #223543;
@@ -17,6 +18,7 @@ html,
 body {
   margin: 0;
   padding: 0;
+
   background: var(--bg);
   color: var(--text);
 
@@ -35,15 +37,17 @@ body {
 
 .container {
   width: min(1180px, calc(100% - 32px));
-  margin: auto;
+  margin: 0 auto;
 }
 
 
-/* HEADER */
+/* =========================================================
+   HEADER
+   ========================================================= */
 
 .site-header {
-  border-bottom: 1px solid var(--line);
   background: #09141d;
+  border-bottom: 1px solid var(--line);
 }
 
 .author {
@@ -56,30 +60,34 @@ body {
   gap: 20px;
 }
 
-.author strong {
+.author-info strong {
   display: block;
+
   font-size: 1rem;
 }
 
-.author span {
+.author-info span {
   display: block;
+
+  margin-top: 3px;
 
   color: var(--muted);
 
   font-size: 0.86rem;
-
-  margin-top: 3px;
 }
 
 .author nav {
   display: flex;
+
   gap: 14px;
 }
 
 .author a {
   color: var(--accent);
-  text-decoration: none;
+
   font-size: 0.9rem;
+
+  text-decoration: none;
 }
 
 .author a:hover {
@@ -87,7 +95,9 @@ body {
 }
 
 
-/* HERO */
+/* =========================================================
+   HERO
+   ========================================================= */
 
 .hero {
   padding: 42px 0 28px;
@@ -108,24 +118,28 @@ h1 {
   margin: 0 0 12px;
 
   font-size: clamp(2.1rem, 5vw, 4rem);
+
   line-height: 1;
 }
 
 h2 {
   margin: 0;
+
   font-size: 1.05rem;
 }
 
 .subtitle {
+  max-width: 800px;
+
   margin: 0;
 
   color: var(--muted);
-
-  max-width: 800px;
 }
 
 
-/* PANELS */
+/* =========================================================
+   PANELS
+   ========================================================= */
 
 .panel {
   margin: 18px 0;
@@ -153,7 +167,9 @@ h2 {
 }
 
 
-/* STATUS */
+/* =========================================================
+   STATUS
+   ========================================================= */
 
 .status,
 .live-badge {
@@ -161,10 +177,10 @@ h2 {
 
   align-items: center;
 
+  padding: 6px 10px;
+
   border: 1px solid var(--line);
   border-radius: 999px;
-
-  padding: 6px 10px;
 
   font-size: 0.72rem;
   font-weight: 800;
@@ -178,11 +194,13 @@ h2 {
 
 .status.ok {
   color: var(--success);
+
   border-color: #275a4b;
 }
 
 .status.error {
   color: var(--danger);
+
   border-color: #633535;
 }
 
@@ -190,11 +208,14 @@ h2 {
   margin-bottom: 8px;
 
   color: var(--success);
+
   border-color: #275a4b;
 }
 
 
-/* TIME INPUTS */
+/* =========================================================
+   INPUTS
+   ========================================================= */
 
 .control-grid {
   display: grid;
@@ -209,30 +230,42 @@ h2 {
 label span {
   display: block;
 
+  margin-bottom: 6px;
+
   color: var(--muted);
 
   font-size: 0.78rem;
-
-  margin-bottom: 6px;
 }
 
 input {
   width: 100%;
+
   min-height: 44px;
+
+  padding: 8px 10px;
+
+  background: var(--panel-dark);
+  color: var(--text);
 
   border: 1px solid var(--line);
   border-radius: 8px;
 
-  background: #08131c;
-  color: var(--text);
-
-  padding: 8px 10px;
-
   font: inherit;
 }
 
+input:focus {
+  outline: none;
 
-/* BUTTONS */
+  border-color: #3c7189;
+
+  box-shadow:
+    0 0 0 2px rgba(101, 215, 255, 0.08);
+}
+
+
+/* =========================================================
+   BUTTONS
+   ========================================================= */
 
 .actions {
   display: flex;
@@ -249,13 +282,11 @@ button {
 
   padding: 9px 14px;
 
-  border-radius: 8px;
+  background: #12232e;
+  color: var(--text);
 
   border: 1px solid var(--line);
-
-  background: #12232e;
-
-  color: var(--text);
+  border-radius: 8px;
 
   font: inherit;
 
@@ -266,19 +297,28 @@ button:hover {
   border-color: #3c6174;
 }
 
+button:active {
+  transform: translateY(1px);
+}
+
 button.primary {
   background: #163b4c;
+
   border-color: #34718b;
+
   color: #fff;
 }
 
 button:disabled {
   opacity: 0.5;
+
   cursor: not-allowed;
 }
 
 
-/* HELP */
+/* =========================================================
+   HELP / COVERAGE
+   ========================================================= */
 
 .help {
   margin: 12px 0 0;
@@ -291,22 +331,23 @@ button:disabled {
 }
 
 
-/* PLOT */
+/* =========================================================
+   PLOT
+   ========================================================= */
 
 .plot-wrap {
   position: relative;
 
+  min-height: 460px;
+
   margin-top: 18px;
+
+  overflow: hidden;
 
   background: #02070b;
 
   border: 1px solid var(--line);
-
   border-radius: 10px;
-
-  overflow: hidden;
-
-  min-height: 460px;
 }
 
 canvas {
@@ -325,9 +366,9 @@ canvas {
 
   place-items: center;
 
-  color: var(--muted);
-
   padding: 20px;
+
+  color: var(--muted);
 
   text-align: center;
 
@@ -339,22 +380,43 @@ canvas {
 }
 
 
-/* AXES */
+/* =========================================================
+   AXIS
+   ========================================================= */
 
 .axis-row {
   display: flex;
 
   justify-content: space-between;
 
+  padding: 8px 2px 0;
+
   color: var(--muted);
 
   font-size: 0.75rem;
-
-  padding: 8px 2px 0;
 }
 
 
-/* DATASET */
+/* =========================================================
+   STATS
+   ========================================================= */
+
+.stats {
+  max-width: 480px;
+
+  color: var(--muted);
+
+  font-size: 0.78rem;
+
+  line-height: 1.5;
+
+  text-align: right;
+}
+
+
+/* =========================================================
+   DATASET NOTES
+   ========================================================= */
 
 .notes p {
   color: var(--muted);
@@ -366,10 +428,18 @@ canvas {
 
 code {
   color: #c6d8e5;
+
+  font-family:
+    "SFMono-Regular",
+    Consolas,
+    "Liberation Mono",
+    monospace;
 }
 
 
-/* FOOTER */
+/* =========================================================
+   FOOTER
+   ========================================================= */
 
 footer {
   display: flex;
@@ -378,15 +448,17 @@ footer {
 
   gap: 16px;
 
+  padding: 28px 0 40px;
+
   color: #708696;
 
   font-size: 0.72rem;
-
-  padding: 28px 0 40px;
 }
 
 
-/* MOBILE */
+/* =========================================================
+   MOBILE
+   ========================================================= */
 
 @media (max-width: 700px) {
 
@@ -398,11 +470,11 @@ footer {
   }
 
   .author {
+    flex-direction: column;
+
     align-items: flex-start;
 
     padding: 14px 0;
-
-    flex-direction: column;
 
     gap: 8px;
   }
@@ -424,6 +496,8 @@ footer {
   }
 
   .stats {
+    max-width: none;
+
     text-align: left;
   }
 
