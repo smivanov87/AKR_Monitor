@@ -3,693 +3,981 @@
 /*
  * AKR Monitor
  *
+ * Browser data source:
+ *   ./data/akr.json
+ *
  * IMPORTANT:
- * The browser reads data already committed to this repository.
- * It does NOT contact NASA, CDAWeb, HAPI, or any other remote data service.
+ *   The browser does NOT contact NASA/CDAWeb.
+ *   NASA data are expected to have been downloaded beforehand
+ *   by the Java downloader and committed to the repository.
  */
 
 const DATA_URL = new URL("./data/akr.json", document.baseURI).href;
 const METADATA_URL = new URL("./data/metadata.json", document.baseURI).href;
 
-let dataset = [];
-let metadata = null;
+const els = {
+  status: document.getElementById("statusPill"),
+  start: document.getElementById("startTime"),
+  end: document.getElementById("endTime"),
+  latest24: document.getElementById("latest24"),
+  latest48: document.getElementById("latest48"),
+  latest7d: document.getElementById("latest7d"),
+  load: document.getElementById("loadButton"),
+  coverage: document.getElementById("coverageLabel"),
+  range: document.getElementById("rangeLabel"),
+  stats: document.getElementById("stats"),
+  canvas: document.getElementById("spectrogram"),
+  message: document.getElementById("plotMessage")
+};
 
-// -----------------------------------------------------------------------------
-// DOM
-// -----------------------------------------------------------------------------
+const ctx = els.canvas ? els.canvas.getContext("2d") : null;
 
-const statusPill = document.getElementById("statusPill");
-const startTimeInput = document.getElementById("startTime");
-const endTimeInput = document.getElementById("endTime");
+let records = [];
+let repositoryStart = null;
+let repositoryEnd = null;
+let busy = false;
 
-const latest24Button = document.getElementById("latest24");
-const latest48Button = document.getElementById("latest48");
-const latest7dButton = document.getElementById("latest7d");
-const loadButton = document.getElementById("loadButton");
 
-const coverageLabel = document.getElementById("coverageLabel");
-const rangeLabel = document.getElementById("rangeLabel");
-const stats = document.getElementById("stats");
-const plotMessage = document.getElementById("plotMessage");
-const spectrogram = document.getElementById("spectrogram");
+/* ------------------------------------------------------------
+ * UI helpers
+ * ------------------------------------------------------------ */
 
-// -----------------------------------------------------------------------------
-// Status
-// -----------------------------------------------------------------------------
+function setStatus(text, kind = "") {
+  if (!els.status) return;
 
-function setStatus(text, type = "") {
-    if (!statusPill) return;
+  els.status.textContent = text;
+  els.status.className = "status";
 
-    statusPill.textContent = text;
-    statusPill.className = "status";
-
-    if (type) {
-        statusPill.classList.add(type);
-    }
+  if (kind) {
+    els.status.classList.add(kind);
+  }
 }
 
-function showError(message) {
-    setStatus("DATA ERROR", "error");
+function showMessage(text) {
+  if (!els.message) return;
 
-    if (plotMessage) {
-        plotMessage.hidden = false;
-        plotMessage.textContent = message;
-    }
-
-    if (stats) {
-        stats.textContent = "";
-    }
+  els.message.textContent = text;
+  els.message.classList.remove("hidden");
 }
 
-// -----------------------------------------------------------------------------
-// JSON loading
-// -----------------------------------------------------------------------------
+function hideMessage() {
+  if (!els.message) return;
+  els.message.classList.add("hidden");
+}
+
+function setBusy(value) {
+  busy = value;
+
+  [
+    els.latest24,
+    els.latest48,
+    els.latest7d,
+    els.load
+  ].forEach(button => {
+    if (button) {
+      button.disabled = value;
+    }
+  });
+}
+
+
+/* ------------------------------------------------------------
+ * Fetch repository files
+ * ------------------------------------------------------------ */
 
 async function fetchJson(url) {
-    const response = await fetch(url, {
-        cache: "no-store"
-    });
+  const response = await fetch(url, {
+    method: "GET",
+    cache: "no-cache"
+  });
 
-    if (!response.ok) {
-        throw new Error(
-            `Could not load ${url} (${response.status} ${response.statusText})`
-        );
-    }
+  if (!response.ok) {
+    throw new Error(
+      `Could not load repository data: HTTP ${response.status}`
+    );
+  }
 
-    return response.json();
+  return response.json();
 }
 
-async function loadRepositoryData() {
-    setStatus("LOADING REPOSITORY DATA", "loading");
+
+/* ------------------------------------------------------------
+ * Numeric conversion
+ * ------------------------------------------------------------ */
+
+function numbersFromValue(value) {
+  if (value === null || value === undefined) {
+    return [];
+  }
+
+  if (Array.isArray(value)) {
+    return value
+      .flat(Infinity)
+      .map(Number)
+      .filter(Number.isFinite);
+  }
+
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? [value] : [];
+  }
+
+  if (typeof value === "object") {
+    /*
+     * Support objects such as:
+     * { "0": 1, "1": 2, ... }
+     */
+    return Object.values(value)
+      .flat(Infinity)
+      .map(Number)
+      .filter(Number.isFinite);
+  }
+
+  let text = String(value).trim();
+
+  if (!text) {
+    return [];
+  }
+
+  /*
+   * Remove common vector wrappers.
+   */
+  text = text
+    .replace(/^\[/, "")
+    .replace(/\]$/, "")
+    .trim();
+
+  return text
+    .split(/[,\s;]+/)
+    .map(Number)
+    .filter(Number.isFinite);
+}
+
+
+/* ------------------------------------------------------------
+ * Time conversion
+ * ------------------------------------------------------------ */
+
+function parseTime(value) {
+  if (value === null || value === undefined) {
+    return NaN;
+  }
+
+  if (typeof value === "number") {
+    /*
+     * Support milliseconds since Unix epoch.
+     */
+    if (value > 1e11) {
+      return value;
+    }
 
     /*
-     * akr.json is the actual required data source.
-     * metadata.json is optional: failure to load it must not prevent
-     * the spectrogram from being displayed.
+     * Support seconds since Unix epoch.
      */
-    const dataPromise = fetchJson(DATA_URL);
+    if (value > 1e9) {
+      return value * 1000;
+    }
+  }
 
-    let rawData;
+  const text = String(value).trim();
 
-    try {
-        rawData = await dataPromise;
-    } catch (error) {
-        throw new Error(
-            `Unable to load data/akr.json.\n\n${error.message}\n\n` +
-            `Make sure the site is being served by GitHub Pages or a web server ` +
-            `and that data/akr.json exists in the deployed repository.`
-        );
+  if (!text) {
+    return NaN;
+  }
+
+  const parsed = Date.parse(text);
+
+  if (Number.isFinite(parsed)) {
+    return parsed;
+  }
+
+  /*
+   * Support:
+   * YYYYMMDDTHHMMSSZ
+   */
+  const compact = text.match(
+    /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})(?:\.(\d+))?Z?$/
+  );
+
+  if (compact) {
+    const year = Number(compact[1]);
+    const month = Number(compact[2]) - 1;
+    const day = Number(compact[3]);
+    const hour = Number(compact[4]);
+    const minute = Number(compact[5]);
+    const second = Number(compact[6]);
+
+    let milliseconds = 0;
+
+    if (compact[7]) {
+      milliseconds = Number(
+        `0.${compact[7]}`
+      ) * 1000;
     }
 
-    try {
-        metadata = await fetchJson(METADATA_URL);
-    } catch (error) {
-        console.warn("metadata.json could not be loaded:", error);
-        metadata = null;
+    return Date.UTC(
+      year,
+      month,
+      day,
+      hour,
+      minute,
+      second,
+      milliseconds
+    );
+  }
+
+  return NaN;
+}
+
+
+/* ------------------------------------------------------------
+ * Repository data parser
+ * ------------------------------------------------------------ */
+
+function normalizeRepositoryData(json) {
+  if (!json) {
+    throw new Error("data/akr.json is empty.");
+  }
+
+  let sourceRecords = null;
+
+  /*
+   * Expected format:
+   *
+   * {
+   *   ...
+   *   "records": [
+   *      {
+   *        "time": "...",
+   *        "values": [...]
+   *      }
+   *   ]
+   * }
+   */
+  if (Array.isArray(json.records)) {
+    sourceRecords = json.records;
+  } else if (Array.isArray(json)) {
+    sourceRecords = json;
+  }
+
+  if (!sourceRecords || !sourceRecords.length) {
+    throw new Error(
+      "data/akr.json contains no records[]."
+    );
+  }
+
+  const normalized = [];
+
+  for (const item of sourceRecords) {
+    if (!item || typeof item !== "object") {
+      continue;
     }
 
-    dataset = normaliseDataset(rawData);
+    const timeValue =
+      item.time ??
+      item.timestamp ??
+      item.epoch ??
+      item.Time ??
+      item.datetime;
 
-    if (!dataset.length) {
-        throw new Error(
-            "data/akr.json was loaded successfully, but it contains no usable spectrum records."
-        );
+    const time = parseTime(timeValue);
+
+    if (!Number.isFinite(time)) {
+      continue;
     }
 
-    dataset.sort((a, b) => a.time - b.time);
+    /*
+     * The Java downloader writes "values".
+     *
+     * Also accept a few possible names so that the
+     * visualizer is tolerant of existing JSON variants.
+     */
+    let rawValues =
+      item.values ??
+      item.spectrum ??
+      item.spectra ??
+      item.spectra_e_mix ??
+      item.value;
+
+    const values = numbersFromValue(rawValues);
+
+    if (!values.length) {
+      continue;
+    }
+
+    normalized.push({
+      time,
+      values
+    });
+  }
+
+  if (!normalized.length) {
+    throw new Error(
+      "data/akr.json was loaded, but no usable time/spectrum records were found."
+    );
+  }
+
+  normalized.sort((a, b) => a.time - b.time);
+
+  return normalized;
+}
+
+
+/* ------------------------------------------------------------
+ * Load repository data
+ * ------------------------------------------------------------ */
+
+async function loadRepositoryData() {
+  setBusy(true);
+  setStatus("Loading repository data…", "loading");
+  showMessage("Loading data/akr.json…");
+
+  try {
+    const json = await fetchJson(DATA_URL);
+
+    records = normalizeRepositoryData(json);
+
+    repositoryStart = records[0].time;
+    repositoryEnd = records[records.length - 1].time;
+
+    if (els.coverage) {
+      els.coverage.textContent =
+        `Repository data coverage: ` +
+        `${formatUtc(repositoryStart)} → ${formatUtc(repositoryEnd)}`;
+    }
+
+    if (els.stats) {
+      const binCounts = records.map(r => r.values.length);
+      const minBins = Math.min(...binCounts);
+      const maxBins = Math.max(...binCounts);
+
+      els.stats.textContent =
+        `${records.length.toLocaleString()} records · ` +
+        `${minBins === maxBins
+          ? minBins
+          : `${minBins}–${maxBins}`} spectrum bins`;
+    }
 
     setStatus("REPOSITORY DATA READY", "success");
 
-    updateCoverageLabel();
-    updateDatasetStats();
-}
+    /*
+     * Show the complete stored repository interval immediately.
+     */
+    renderInterval(repositoryStart, repositoryEnd);
 
-// -----------------------------------------------------------------------------
-// Data normalisation
-// -----------------------------------------------------------------------------
+    hideMessage();
 
-function normaliseDataset(raw) {
-    let records = [];
-
-    if (Array.isArray(raw)) {
-        records = raw;
-    } else if (raw && Array.isArray(raw.records)) {
-        records = raw.records;
-    } else if (raw && Array.isArray(raw.data)) {
-        records = raw.data;
-    } else {
-        throw new Error(
-            "Unexpected akr.json format. Expected an array or an object containing records[]."
-        );
-    }
-
-    return records
-        .map((item) => {
-            if (!item || typeof item !== "object") {
-                return null;
-            }
-
-            const timeValue =
-                item.time ??
-                item.Time ??
-                item.timestamp ??
-                item.Timestamp;
-
-            const values =
-                item.values ??
-                item.spectrum ??
-                item.Spectrum ??
-                item.data ??
-                item.Data;
-
-            const time = new Date(timeValue);
-
-            if (!Number.isFinite(time.getTime())) {
-                return null;
-            }
-
-            if (!Array.isArray(values)) {
-                return null;
-            }
-
-            const cleanValues = values.map(toNumberOrNull);
-
-            return {
-                time,
-                values: cleanValues
-            };
-        })
-        .filter(Boolean);
-}
-
-function toNumberOrNull(value) {
-    if (
-        value === null ||
-        value === undefined ||
-        value === "" ||
-        value === "null" ||
-        value === "NaN"
-    ) {
-        return null;
-    }
-
-    const number = Number(value);
-
-    return Number.isFinite(number) ? number : null;
-}
-
-// -----------------------------------------------------------------------------
-// Coverage / statistics
-// -----------------------------------------------------------------------------
-
-function getFirstTime() {
-    return dataset.length ? dataset[0].time : null;
-}
-
-function getLastTime() {
-    return dataset.length ? dataset[dataset.length - 1].time : null;
-}
-
-function formatUtc(date) {
-    if (!(date instanceof Date) || !Number.isFinite(date.getTime())) {
-        return "—";
-    }
-
-    return date.toISOString().replace(".000Z", "Z");
-}
-
-function updateCoverageLabel() {
-    const first = getFirstTime();
-    const last = getLastTime();
-
-    if (!coverageLabel) return;
-
-    if (!first || !last) {
-        coverageLabel.textContent = "No repository data available";
-        return;
-    }
-
-    coverageLabel.textContent =
-        `Repository coverage: ${formatUtc(first)} → ${formatUtc(last)}`;
-}
-
-function updateDatasetStats() {
-    if (!stats) return;
-
-    const first = getFirstTime();
-    const last = getLastTime();
-
-    if (!first || !last) {
-        stats.textContent = "";
-        return;
-    }
-
-    const hours =
-        (last.getTime() - first.getTime()) / (1000 * 60 * 60);
-
-    stats.textContent =
-        `${dataset.length.toLocaleString()} records · ` +
-        `${hours.toFixed(2)} h stored`;
-}
-
-// -----------------------------------------------------------------------------
-// Interval selection
-// -----------------------------------------------------------------------------
-
-function getRecordsInInterval(start, end) {
-    const startMs = start.getTime();
-    const endMs = end.getTime();
-
-    return dataset.filter((record) => {
-        const t = record.time.getTime();
-        return t >= startMs && t <= endMs;
+    console.log("Repository data loaded:", {
+      records: records.length,
+      start: new Date(repositoryStart).toISOString(),
+      end: new Date(repositoryEnd).toISOString(),
+      firstRecord: records[0],
+      lastRecord: records[records.length - 1]
     });
+
+  } catch (error) {
+    console.error(error);
+
+    records = [];
+    repositoryStart = null;
+    repositoryEnd = null;
+
+    setStatus("DATA ERROR", "error");
+
+    showMessage(error.message);
+
+    clearCanvas();
+
+    if (els.coverage) {
+      els.coverage.textContent =
+        "Repository data coverage: unavailable";
+    }
+  } finally {
+    setBusy(false);
+  }
 }
 
-function getLatestTime() {
-    return getLastTime();
+
+/* ------------------------------------------------------------
+ * Interval handling
+ *
+ * IMPORTANT:
+ * "Latest" is relative to the latest timestamp
+ * actually stored in akr.json.
+ *
+ * It is NOT relative to today's browser clock.
+ * ------------------------------------------------------------ */
+
+function showLatest(hours) {
+  if (busy || !records.length) {
+    return;
+  }
+
+  const end = repositoryEnd;
+  const start = end - hours * 60 * 60 * 1000;
+
+  renderInterval(
+    Math.max(start, repositoryStart),
+    end
+  );
 }
 
-function selectLatest(hours) {
-    const latest = getLatestTime();
+function showLatestDays(days) {
+  if (busy || !records.length) {
+    return;
+  }
 
-    if (!latest) {
-        showError("The repository contains no usable timestamps.");
-        return;
+  const end = repositoryEnd;
+  const start = end - days * 24 * 60 * 60 * 1000;
+
+  renderInterval(
+    Math.max(start, repositoryStart),
+    end
+  );
+}
+
+
+/* ------------------------------------------------------------
+ * Render selected interval
+ * ------------------------------------------------------------ */
+
+function renderInterval(startMs, endMs) {
+  if (!records.length) {
+    showMessage("NO DATA");
+    clearCanvas();
+    return;
+  }
+
+  const selected = records.filter(
+    record =>
+      record.time >= startMs &&
+      record.time <= endMs
+  );
+
+  if (!selected.length) {
+    setStatus("NO DATA IN INTERVAL", "warning");
+    showMessage("NO DATA IN INTERVAL");
+    clearCanvas();
+
+    if (els.range) {
+      els.range.textContent =
+        `${formatUtc(startMs)} → ${formatUtc(endMs)}`;
     }
 
-    const start = new Date(
-        latest.getTime() - hours * 60 * 60 * 1000
+    return;
+  }
+
+  setStatus("DISPLAYING STORED DATA", "success");
+  hideMessage();
+
+  if (els.range) {
+    els.range.textContent =
+      `${formatUtc(selected[0].time)} → ` +
+      `${formatUtc(selected[selected.length - 1].time)}`;
+  }
+
+  drawSpectrogram(selected);
+
+  if (els.stats) {
+    const binCounts = selected.map(
+      record => record.values.length
     );
 
-    /*
-     * If the repository contains less than the requested interval,
-     * use the beginning of the actual stored coverage.
-     */
-    const first = getFirstTime();
+    const minBins = Math.min(...binCounts);
+    const maxBins = Math.max(...binCounts);
 
-    const effectiveStart =
-        first && start < first ? first : start;
-
-    startTimeInput.value = toDatetimeLocalValue(effectiveStart);
-    endTimeInput.value = toDatetimeLocalValue(latest);
-
-    loadSelected();
+    els.stats.textContent =
+      `${selected.length.toLocaleString()} records · ` +
+      `${minBins === maxBins
+        ? minBins
+        : `${minBins}–${maxBins}`} spectrum bins`;
+  }
 }
 
-function loadSelected() {
-    if (!dataset.length) {
-        showError("No repository data are available.");
-        return;
+
+/* ------------------------------------------------------------
+ * Spectrogram
+ * ------------------------------------------------------------ */
+
+function drawSpectrogram(data) {
+  if (!ctx || !els.canvas) {
+    return;
+  }
+
+  const canvas = els.canvas;
+
+  /*
+   * Make the canvas match its displayed size.
+   */
+  const rect = canvas.getBoundingClientRect();
+
+  const width = Math.max(
+    800,
+    Math.floor(rect.width || 1000)
+  );
+
+  const height = Math.max(
+    400,
+    Math.floor(rect.height || 520)
+  );
+
+  const devicePixelRatio =
+    window.devicePixelRatio || 1;
+
+  canvas.width = Math.floor(
+    width * devicePixelRatio
+  );
+
+  canvas.height = Math.floor(
+    height * devicePixelRatio
+  );
+
+  canvas.style.width = `${width}px`;
+  canvas.style.height = `${height}px`;
+
+  ctx.setTransform(
+    devicePixelRatio,
+    0,
+    0,
+    devicePixelRatio,
+    0,
+    0
+  );
+
+  ctx.clearRect(0, 0, width, height);
+
+  /*
+   * Find the largest common number of bins.
+   *
+   * This avoids malformed rows causing the canvas
+   * renderer to fail.
+   */
+  const binCounts = data.map(
+    record => record.values.length
+  );
+
+  const bins = Math.min(...binCounts);
+
+  if (!Number.isFinite(bins) || bins < 1) {
+    showMessage("NO USABLE SPECTRUM VALUES");
+    return;
+  }
+
+  /*
+   * Plot margins.
+   */
+  const left = 70;
+  const right = 20;
+  const top = 20;
+  const bottom = 45;
+
+  const plotWidth =
+    width - left - right;
+
+  const plotHeight =
+    height - top - bottom;
+
+  /*
+   * Calculate global finite min/max.
+   */
+  let min = Infinity;
+  let max = -Infinity;
+
+  for (const record of data) {
+    for (let i = 0; i < bins; i++) {
+      const value = Number(record.values[i]);
+
+      if (!Number.isFinite(value)) {
+        continue;
+      }
+
+      min = Math.min(min, value);
+      max = Math.max(max, value);
     }
+  }
 
-    const start = parseDateTimeInput(startTimeInput.value);
-    const end = parseDateTimeInput(endTimeInput.value);
+  if (
+    !Number.isFinite(min) ||
+    !Number.isFinite(max)
+  ) {
+    showMessage("NO FINITE SPECTRUM VALUES");
+    return;
+  }
 
-    if (!start || !end) {
-        showError("Please enter a valid start and end time.");
-        return;
-    }
+  /*
+   * Avoid zero-width scale.
+   */
+  if (max === min) {
+    max = min + 1;
+  }
 
-    if (start >= end) {
-        showError("Start time must be earlier than end time.");
-        return;
-    }
+  /*
+   * Draw background.
+   */
+  ctx.fillStyle = "#050a12";
+  ctx.fillRect(
+    left,
+    top,
+    plotWidth,
+    plotHeight
+  );
 
-    const records = getRecordsInInterval(start, end);
+  /*
+   * Each record becomes one vertical strip.
+   *
+   * Frequency/bin 0 is at the bottom.
+   */
+  for (let x = 0; x < data.length; x++) {
+    const values = data[x].values;
 
-    if (!records.length) {
-        setStatus("NO DATA IN INTERVAL", "warning");
+    const x0 =
+      left +
+      (x / data.length) * plotWidth;
 
-        if (rangeLabel) {
-            rangeLabel.textContent =
-                `${formatUtc(start)} → ${formatUtc(end)}`;
-        }
+    const x1 =
+      left +
+      ((x + 1) / data.length) * plotWidth;
 
-        if (plotMessage) {
-            plotMessage.hidden = false;
-            plotMessage.textContent =
-                "No stored records exist inside the selected interval.";
-        }
+    const cellWidth =
+      Math.max(1, Math.ceil(x1 - x0));
 
-        if (stats) {
-            stats.textContent = "0 records selected";
-        }
+    for (let y = 0; y < bins; y++) {
+      let value = Number(values[y]);
 
-        clearCanvas();
-        return;
-    }
+      if (!Number.isFinite(value)) {
+        continue;
+      }
 
-    renderData(records);
-}
+      /*
+       * Normalize 0..1.
+       */
+      let normalized =
+        (value - min) / (max - min);
 
-// -----------------------------------------------------------------------------
-// Rendering
-// -----------------------------------------------------------------------------
-
-function renderData(records) {
-    setStatus("DISPLAYING REPOSITORY DATA", "success");
-
-    if (rangeLabel) {
-        rangeLabel.textContent =
-            `${formatUtc(records[0].time)} → ` +
-            `${formatUtc(records[records.length - 1].time)}`;
-    }
-
-    if (stats) {
-        const bins = records.reduce(
-            (max, record) => Math.max(max, record.values.length),
-            0
-        );
-
-        stats.textContent =
-            `${records.length.toLocaleString()} records · ` +
-            `${bins.toLocaleString()} spectral bins`;
-    }
-
-    if (plotMessage) {
-        plotMessage.hidden = true;
-    }
-
-    renderSpectrogram(records);
-}
-
-function renderSpectrogram(records) {
-    if (!spectrogram) return;
-
-    const rect = spectrogram.getBoundingClientRect();
-
-    const cssWidth = Math.max(
-        500,
-        Math.floor(rect.width || spectrogram.clientWidth || 900)
-    );
-
-    const cssHeight = Math.max(
-        400,
-        Math.floor(rect.height || spectrogram.clientHeight || 600)
-    );
-
-    const devicePixelRatioValue =
-        Math.min(window.devicePixelRatio || 1, 2);
-
-    spectrogram.width =
-        Math.floor(cssWidth * devicePixelRatioValue);
-
-    spectrogram.height =
-        Math.floor(cssHeight * devicePixelRatioValue);
-
-    spectrogram.style.width = `${cssWidth}px`;
-    spectrogram.style.height = `${cssHeight}px`;
-
-    const ctx = spectrogram.getContext("2d");
-
-    if (!ctx) {
-        showError("The browser could not create a canvas rendering context.");
-        return;
-    }
-
-    ctx.setTransform(
-        devicePixelRatioValue,
+      normalized = Math.max(
         0,
-        0,
-        devicePixelRatioValue,
-        0,
-        0
+        Math.min(1, normalized)
+      );
+
+      /*
+       * Plot bottom-to-top.
+       */
+      const y0 =
+        top +
+        plotHeight -
+        ((y + 1) / bins) * plotHeight;
+
+      const y1 =
+        top +
+        plotHeight -
+        (y / bins) * plotHeight;
+
+      const cellHeight =
+        Math.max(1, Math.ceil(y1 - y0));
+
+      ctx.fillStyle =
+        spectrogramColor(normalized);
+
+      ctx.fillRect(
+        x0,
+        y0,
+        cellWidth,
+        cellHeight
+      );
+    }
+  }
+
+  /*
+   * Axes.
+   */
+  ctx.strokeStyle = "rgba(255,255,255,0.35)";
+  ctx.lineWidth = 1;
+
+  ctx.beginPath();
+
+  ctx.moveTo(left, top);
+  ctx.lineTo(left, top + plotHeight);
+  ctx.lineTo(
+    left + plotWidth,
+    top + plotHeight
+  );
+
+  ctx.stroke();
+
+  /*
+   * Y labels.
+   */
+  ctx.fillStyle = "rgba(255,255,255,0.72)";
+  ctx.font = "12px sans-serif";
+  ctx.textAlign = "right";
+  ctx.textBaseline = "middle";
+
+  const yTicks = 5;
+
+  for (let i = 0; i <= yTicks; i++) {
+    const fraction = i / yTicks;
+
+    const y =
+      top +
+      plotHeight -
+      fraction * plotHeight;
+
+    const value =
+      min + fraction * (max - min);
+
+    ctx.fillText(
+      formatValue(value),
+      left - 8,
+      y
     );
+  }
 
-    ctx.clearRect(0, 0, cssWidth, cssHeight);
+  /*
+   * X labels.
+   */
+  ctx.textAlign = "center";
+  ctx.textBaseline = "top";
 
-    /*
-     * Find the maximum available number of bins.
-     */
-    const binCount = records.reduce(
-        (max, record) => Math.max(max, record.values.length),
-        0
-    );
+  const xTicks = 5;
 
-    if (!binCount) {
-        showError("The selected records contain no spectral values.");
-        return;
-    }
-
-    /*
-     * Gather positive finite values for robust logarithmic scaling.
-     */
-    const positiveValues = [];
-
-    for (const record of records) {
-        for (const value of record.values) {
-            if (Number.isFinite(value) && value > 0) {
-                positiveValues.push(value);
-            }
-        }
-    }
-
-    if (!positiveValues.length) {
-        showError("The selected records contain no positive spectral values.");
-        return;
-    }
-
-    positiveValues.sort((a, b) => a - b);
-
-    const low = percentile(positiveValues, 0.02);
-    const high = percentile(positiveValues, 0.98);
-
-    const logLow = Math.log10(Math.max(low, Number.MIN_VALUE));
-    const logHigh = Math.log10(Math.max(high, Number.MIN_VALUE));
-
-    /*
-     * Draw one vertical strip for each stored record.
-     * Multiple records are compressed into the available screen width.
-     */
-    for (let x = 0; x < cssWidth; x++) {
-        const index = Math.min(
-            records.length - 1,
-            Math.floor((x / cssWidth) * records.length)
-        );
-
-        const record = records[index];
-
-        if (!record) continue;
-
-        for (let y = 0; y < cssHeight; y++) {
-            /*
-             * Frequency/bin direction:
-             * low bins at the bottom, high bins at the top.
-             */
-            const normalizedY = 1 - y / Math.max(1, cssHeight - 1);
-
-            const bin = Math.min(
-                binCount - 1,
-                Math.floor(normalizedY * binCount)
-            );
-
-            const value = record.values[bin];
-
-            if (!(Number.isFinite(value) && value > 0)) {
-                continue;
-            }
-
-            const logValue = Math.log10(value);
-
-            let normalized =
-                (logValue - logLow) /
-                Math.max(1e-12, logHigh - logLow);
-
-            normalized = clamp(normalized, 0, 1);
-
-            ctx.fillStyle = spectrumColour(normalized);
-            ctx.fillRect(x, y, 1, 1);
-        }
-    }
-}
-
-// -----------------------------------------------------------------------------
-// Canvas helpers
-// -----------------------------------------------------------------------------
-
-function clearCanvas() {
-    if (!spectrogram) return;
-
-    const ctx = spectrogram.getContext("2d");
-
-    if (!ctx) return;
-
-    ctx.clearRect(
-        0,
-        0,
-        spectrogram.width,
-        spectrogram.height
-    );
-}
-
-function spectrumColour(value) {
-    /*
-     * Scientific-style blue → cyan → yellow → red scale.
-     * Implemented numerically so no external colour library is required.
-     */
-    const stops = [
-        [0.00, [5, 20, 60]],
-        [0.20, [20, 70, 150]],
-        [0.40, [0, 170, 220]],
-        [0.60, [80, 220, 160]],
-        [0.78, [245, 220, 70]],
-        [0.90, [245, 120, 35]],
-        [1.00, [220, 25, 35]]
-    ];
-
-    for (let i = 0; i < stops.length - 1; i++) {
-        const [p1, c1] = stops[i];
-        const [p2, c2] = stops[i + 1];
-
-        if (value >= p1 && value <= p2) {
-            const t = (value - p1) / (p2 - p1);
-
-            const r = Math.round(c1[0] + (c2[0] - c1[0]) * t);
-            const g = Math.round(c1[1] + (c2[1] - c1[1]) * t);
-            const b = Math.round(c1[2] + (c2[2] - c1[2]) * t);
-
-            return `rgb(${r}, ${g}, ${b})`;
-        }
-    }
-
-    return "rgb(220, 25, 35)";
-}
-
-function percentile(sortedValues, p) {
-    if (!sortedValues.length) return 0;
+  for (let i = 0; i <= xTicks; i++) {
+    const fraction = i / xTicks;
 
     const index =
-        (sortedValues.length - 1) * clamp(p, 0, 1);
+      Math.min(
+        data.length - 1,
+        Math.floor(
+          fraction * (data.length - 1)
+        )
+      );
 
-    const lower = Math.floor(index);
-    const upper = Math.ceil(index);
+    const x =
+      left +
+      fraction * plotWidth;
 
-    if (lower === upper) {
-        return sortedValues[lower];
-    }
+    const time = data[index].time;
 
-    const fraction = index - lower;
-
-    return (
-        sortedValues[lower] +
-        (sortedValues[upper] - sortedValues[lower]) * fraction
+    ctx.fillText(
+      formatAxisTime(time),
+      x,
+      top + plotHeight + 8
     );
+  }
+
+  /*
+   * Small diagnostic information in console.
+   */
+  console.log("Spectrogram rendered:", {
+    records: data.length,
+    bins,
+    min,
+    max,
+    firstTime:
+      new Date(data[0].time).toISOString(),
+    lastTime:
+      new Date(
+        data[data.length - 1].time
+      ).toISOString()
+  });
 }
 
-function clamp(value, min, max) {
-    return Math.min(max, Math.max(min, value));
-}
 
-// -----------------------------------------------------------------------------
-// Date helpers
-// -----------------------------------------------------------------------------
+/* ------------------------------------------------------------
+ * Color mapping
+ * ------------------------------------------------------------ */
 
-function parseDateTimeInput(value) {
-    if (!value) return null;
+function spectrogramColor(value) {
+  /*
+   * Simple blue → cyan → yellow → red scale.
+   * No external library is required.
+   */
 
-    const date = new Date(value);
+  const stops = [
+    [0.00, 5, 10, 35],
+    [0.25, 20, 70, 180],
+    [0.50, 0, 190, 220],
+    [0.75, 245, 220, 60],
+    [1.00, 220, 30, 30]
+  ];
 
-    return Number.isFinite(date.getTime())
-        ? date
-        : null;
-}
+  for (let i = 0; i < stops.length - 1; i++) {
+    const a = stops[i];
+    const b = stops[i + 1];
 
-function toDatetimeLocalValue(date) {
-    const pad = (number) =>
-        String(number).padStart(2, "0");
+    if (
+      value >= a[0] &&
+      value <= b[0]
+    ) {
+      const t =
+        (value - a[0]) /
+        (b[0] - a[0]);
 
-    return (
-        `${date.getUTCFullYear()}-` +
-        `${pad(date.getUTCMonth() + 1)}-` +
-        `${pad(date.getUTCDate())}T` +
-        `${pad(date.getUTCHours())}:` +
-        `${pad(date.getUTCMinutes())}`
-    );
-}
-
-// -----------------------------------------------------------------------------
-// Events
-// -----------------------------------------------------------------------------
-
-latest24Button?.addEventListener("click", () => {
-    selectLatest(24);
-});
-
-latest48Button?.addEventListener("click", () => {
-    selectLatest(48);
-});
-
-latest7dButton?.addEventListener("click", () => {
-    selectLatest(24 * 7);
-});
-
-loadButton?.addEventListener("click", () => {
-    loadSelected();
-});
-
-window.addEventListener("resize", () => {
-    if (dataset.length) {
-        const start = parseDateTimeInput(startTimeInput.value);
-        const end = parseDateTimeInput(endTimeInput.value);
-
-        if (start && end) {
-            const records = getRecordsInInterval(start, end);
-
-            if (records.length) {
-                renderSpectrogram(records);
-            }
-        }
-    }
-});
-
-// -----------------------------------------------------------------------------
-// Initialisation
-// -----------------------------------------------------------------------------
-
-async function init() {
-    try {
-        /*
-         * Explicitly prevent the page from appearing to hang forever.
-         */
-        setStatus("LOADING REPOSITORY DATA", "loading");
-
-        await loadRepositoryData();
-
-        const latest = getLatestTime();
-
-        if (!latest) {
-            throw new Error("No valid timestamps were found.");
-        }
-
-        const first = getFirstTime();
-
-        const requestedStart = new Date(
-            latest.getTime() - 24 * 60 * 60 * 1000
+      const r =
+        Math.round(
+          a[1] + t * (b[1] - a[1])
         );
 
-        const effectiveStart =
-            requestedStart < first
-                ? first
-                : requestedStart;
-
-        startTimeInput.value =
-            toDatetimeLocalValue(effectiveStart);
-
-        endTimeInput.value =
-            toDatetimeLocalValue(latest);
-
-        loadSelected();
-
-    } catch (error) {
-        console.error("AKR Monitor initialisation failed:", error);
-
-        showError(
-            error?.message ||
-            "Unable to load the repository data."
+      const g =
+        Math.round(
+          a[2] + t * (b[2] - a[2])
         );
+
+      const blue =
+        Math.round(
+          a[3] + t * (b[3] - a[3])
+        );
+
+      return `rgb(${r},${g},${blue})`;
     }
+  }
+
+  return "rgb(220,30,30)";
 }
 
-init();
 
+/* ------------------------------------------------------------
+ * Canvas clearing
+ * ------------------------------------------------------------ */
+
+function clearCanvas() {
+  if (!ctx || !els.canvas) {
+    return;
+  }
+
+  const canvas = els.canvas;
+
+  const width =
+    canvas.clientWidth || 1000;
+
+  const height =
+    canvas.clientHeight || 520;
+
+  canvas.width =
+    width * (window.devicePixelRatio || 1);
+
+  canvas.height =
+    height * (window.devicePixelRatio || 1);
+
+  canvas.style.width =
+    `${width}px`;
+
+  canvas.style.height =
+    `${height}px`;
+
+  ctx.setTransform(
+    window.devicePixelRatio || 1,
+    0,
+    0,
+    window.devicePixelRatio || 1,
+    0,
+    0
+  );
+
+  ctx.clearRect(
+    0,
+    0,
+    width,
+    height
+  );
+}
+
+
+/* ------------------------------------------------------------
+ * Formatting
+ * ------------------------------------------------------------ */
+
+function formatUtc(ms) {
+  if (!Number.isFinite(ms)) {
+    return "—";
+  }
+
+  return new Date(ms)
+    .toISOString()
+    .replace(".000Z", "Z");
+}
+
+function formatAxisTime(ms) {
+  const d = new Date(ms);
+
+  return (
+    `${String(d.getUTCHours()).padStart(2, "0")}:` +
+    `${String(d.getUTCMinutes()).padStart(2, "0")}`
+  );
+}
+
+function formatValue(value) {
+  if (
+    Math.abs(value) >= 1000 ||
+    Math.abs(value) < 0.01
+  ) {
+    return value.toExponential(2);
+  }
+
+  return value.toFixed(2);
+}
+
+
+/* ------------------------------------------------------------
+ * Button handlers
+ * ------------------------------------------------------------ */
+
+if (els.latest24) {
+  els.latest24.addEventListener(
+    "click",
+    () => showLatest(24)
+  );
+}
+
+if (els.latest48) {
+  els.latest48.addEventListener(
+    "click",
+    () => showLatest(48)
+  );
+}
+
+if (els.latest7d) {
+  els.latest7d.addEventListener(
+    "click",
+    () => showLatestDays(7)
+  );
+}
+
+if (els.load) {
+  els.load.addEventListener(
+    "click",
+    () => loadRepositoryData()
+  );
+}
+
+
+/* ------------------------------------------------------------
+ * Resize
+ * ------------------------------------------------------------ */
+
+window.addEventListener(
+  "resize",
+  () => {
+    if (records.length) {
+      /*
+       * Redraw the currently displayed repository interval.
+       * Use the whole repository interval because that is the
+       * initial/default view.
+       */
+      renderInterval(
+        repositoryStart,
+        repositoryEnd
+      );
+    }
+  }
+);
+
+
+/* ------------------------------------------------------------
+ * Start
+ * ------------------------------------------------------------ */
+
+document.addEventListener(
+  "DOMContentLoaded",
+  () => {
+    loadRepositoryData();
+  }
+);
