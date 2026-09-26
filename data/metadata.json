@@ -1,3 +1,11 @@
 {
-  "status": "not downloaded yet"
+  "dataset": "ERG_PWE_HFA_L2_SPEC_HIGH",
+  "variable": "spectra_e_mix",
+  "content_variable": "e_mix_content",
+  "source": "NASA CDAWeb REST",
+  "coverage_start": "2017-03-23T00:00:08Z",
+  "coverage_end": "2025-06-30T18:19:59Z",
+  "requested_start": "2025-06-30T17:19:59Z",
+  "requested_end": "2025-06-30T18:19:59Z",
+  "record_count": 3596
 }
