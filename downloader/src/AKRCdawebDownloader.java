@@ -13,33 +13,13 @@ import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import javax.xml.parsers.DocumentBuilderFactory;
-
-import org.w3c.dom.Document;
-import org.w3c.dom.NodeList;
-
-/**
- * AKR Monitor CDAWeb downloader.
- *
- * Downloads ERG PWE HFA Level-2 HIGH spectrum data from
- * NASA CDAWeb using the CDAS REST Web Service.
- *
- * The downloader:
- *   1. Reads dataset coverage from CDAWeb.
- *   2. Searches backwards for an interval containing data.
- *   3. Requests spectra_e_mix and e_mix_content explicitly.
- *   4. Receives a CDAWeb-generated CSV file.
- *   5. Converts the CSV into data/akr.json.
- *
- * No external Java libraries are required.
- */
 public class AKRCdawebDownloader {
+
+    private static final String HAPI =
+            "https://cdaweb.gsfc.nasa.gov/hapi";
 
     private static final String CDAS =
             "https://cdaweb.gsfc.nasa.gov/WS/cdasr/1";
-
-    private static final String DATAVIEW =
-            "sp_phys";
 
     private static final String DATASET =
             "ERG_PWE_HFA_L2_SPEC_HIGH";
@@ -59,7 +39,7 @@ public class AKRCdawebDownloader {
                     .followRedirects(HttpClient.Redirect.NORMAL)
                     .build();
 
-    private static int hours = 24;
+    private static int hours = 1;
 
     public static void main(String[] args) {
 
@@ -77,7 +57,7 @@ public class AKRCdawebDownloader {
         System.out.println("Dataset : " + DATASET);
         System.out.println("Variable: " + VARIABLE);
         System.out.println("Content : " + CONTENT);
-        System.out.println("Service : NASA CDAWeb CDAS REST");
+        System.out.println("Service : NASA CDAWeb REST");
         System.out.println();
 
         try {
@@ -90,30 +70,32 @@ public class AKRCdawebDownloader {
         }
     }
 
-    private static void cycle() throws Exception {
+    private static void cycle() {
 
         /*
-         * First obtain the dataset description.
+         * HAPI /info works for this dataset and gives us
+         * the official CDAWeb coverage interval.
          */
-        String datasetUrl =
-                CDAS +
-                "/dataviews/" +
-                DATAVIEW +
-                "/datasets/" +
+        String infoUrl =
+                HAPI +
+                "/info?id=" +
                 enc(DATASET);
 
-        System.out.println("Reading CDAWeb dataset information...");
-        System.out.println(datasetUrl);
+        System.out.println(
+                "Reading CDAWeb dataset coverage..."
+        );
+        System.out.println(infoUrl);
 
-        String datasetXml = get(datasetUrl);
+        String info =
+                get(infoUrl);
 
         atomicWrite(
-                DATA_DIR.resolve("dataset-info.xml"),
-                datasetXml
+                DATA_DIR.resolve("dataset-info.json"),
+                info
         );
 
         Instant[] coverage =
-                parseCoverage(datasetXml);
+                coverage(info);
 
         System.out.println();
         System.out.println("Dataset coverage:");
@@ -121,7 +103,8 @@ public class AKRCdawebDownloader {
         System.out.println("  END  : " + coverage[1]);
 
         /*
-         * Search backwards for an interval with actual data.
+         * Search backwards for a period where the direct
+         * CDAWeb REST service returns actual spectrum data.
          */
         Instant[] interval =
                 findUsableInterval(
@@ -138,7 +121,7 @@ public class AKRCdawebDownloader {
         System.out.println("  END  : " + end);
 
         /*
-         * Ask CDAS for the actual spectrum data.
+         * Download the actual spectrum through CDAS REST.
          */
         String csv =
                 requestCsv(
@@ -147,11 +130,14 @@ public class AKRCdawebDownloader {
                 );
 
         System.out.println();
-        System.out.println("Received CSV:");
-        System.out.println("  Size: " + csv.length() + " bytes");
+        System.out.println(
+                "CSV response size: " +
+                csv.length() +
+                " bytes"
+        );
 
         /*
-         * Save raw response temporarily for diagnostics.
+         * Keep the raw response during testing.
          */
         atomicWrite(
                 DATA_DIR.resolve("akr-raw.csv"),
@@ -159,7 +145,7 @@ public class AKRCdawebDownloader {
         );
 
         /*
-         * Convert CDAWeb CSV to our small web JSON format.
+         * Convert CSV into the JSON consumed by the website.
          */
         String json =
                 csvToJson(
@@ -173,9 +159,6 @@ public class AKRCdawebDownloader {
                 json
         );
 
-        /*
-         * Metadata for the website / debugging.
-         */
         String metadata =
                 "{\n" +
                 "  \"dataset\": \"" + DATASET + "\",\n" +
@@ -200,8 +183,11 @@ public class AKRCdawebDownloader {
         );
     }
 
-    /**
-     * Search backwards through the dataset coverage.
+    /*
+     * Search backwards from the end of the dataset.
+     *
+     * We use relatively small windows because spectrum data
+     * can become very large.
      */
     private static Instant[] findUsableInterval(
             Instant coverageStart,
@@ -220,7 +206,9 @@ public class AKRCdawebDownloader {
         for (long windowHours : windows) {
 
             Instant start =
-                    end.minus(Duration.ofHours(windowHours));
+                    end.minus(
+                            Duration.ofHours(windowHours)
+                    );
 
             if (start.isBefore(coverageStart)) {
                 start = coverageStart;
@@ -228,7 +216,7 @@ public class AKRCdawebDownloader {
 
             System.out.println();
             System.out.println(
-                    "Testing interval: " +
+                    "Probe interval: " +
                     start +
                     " -> " +
                     end
@@ -242,28 +230,43 @@ public class AKRCdawebDownloader {
                                 end
                         );
 
+                System.out.println(
+                        "Probe response size: " +
+                        csv.length() +
+                        " bytes"
+                );
+
                 if (containsData(csv)) {
 
                     System.out.println(
-                            "Data found. CSV size = " +
-                            csv.length() +
-                            " bytes"
+                            "Usable data found."
                     );
 
+                    /*
+                     * For the actual download we use only
+                     * the most recent requested interval.
+                     */
+                    Instant selectedStart =
+                            end.minus(
+                                    Duration.ofHours(hours)
+                            );
+
+                    if (selectedStart.isBefore(
+                            coverageStart)) {
+                        selectedStart =
+                                coverageStart;
+                    }
+
                     return new Instant[] {
-                            start,
+                            selectedStart,
                             end
                     };
                 }
 
-                System.out.println(
-                        "No usable rows returned."
-                );
-
             } catch (Exception e) {
 
                 System.out.println(
-                        "Interval failed: " +
+                        "Probe failed: " +
                         e.getMessage()
                 );
             }
@@ -276,188 +279,119 @@ public class AKRCdawebDownloader {
         }
 
         throw new RuntimeException(
-                "Could not find usable CDAWeb data."
+                "Could not find usable " +
+                VARIABLE +
+                " data through CDAWeb REST."
         );
     }
 
-    /**
-     * Submit a CDAS TextRequest and then download the
-     * generated CSV file.
+    /*
+     * NASA's documented CDAWeb REST data URL:
      *
-     * NASA CDAS uses a POST request for data requests.
+     * /dataviews/sp_phys/datasets/DATASET/
+     * data/START,END/VARIABLE?format=csv
      */
     private static String requestCsv(
             Instant start,
-            Instant end) throws Exception {
+            Instant end) {
 
-        String xml =
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" +
-                "<DataRequest " +
-                "xmlns=\"http://cdaweb.gsfc.nasa.gov/schema\">" +
+        String startText =
+                compactTime(start);
 
-                "<TextRequest>" +
+        String endText =
+                compactTime(end);
 
-                "<TimeInterval>" +
-                "<Start>" + start + "</Start>" +
-                "<End>" + end + "</End>" +
-                "</TimeInterval>" +
-
-                "<DatasetRequest>" +
-                "<DatasetId>" + DATASET + "</DatasetId>" +
-
-                "<VariableName>" +
-                VARIABLE +
-                "</VariableName>" +
-
-                "<VariableName>" +
-                CONTENT +
-                "</VariableName>" +
-
-                "</DatasetRequest>" +
-
-                "<Compression>Uncompressed</Compression>" +
-                "<Format>CSV</Format>" +
-
-                "</TextRequest>" +
-                "</DataRequest>";
-
-        System.out.println();
-        System.out.println("Submitting CDAS TextRequest...");
-        System.out.println(
-                "Variables: " +
-                VARIABLE +
-                ", " +
-                CONTENT
-        );
-
-        HttpRequest request =
-                HttpRequest.newBuilder()
-                        .uri(
-                                URI.create(
-                                        CDAS +
-                                        "/dataviews/" +
-                                        DATAVIEW +
-                                        "/datasets"
-                                )
-                        )
-                        .timeout(Duration.ofMinutes(5))
-                        .header(
-                                "Content-Type",
-                                "application/xml"
-                        )
-                        .header(
-                                "Accept",
-                                "application/xml"
-                        )
-                        .POST(
-                                HttpRequest.BodyPublishers.ofString(
-                                        xml,
-                                        StandardCharsets.UTF_8
-                                )
-                        )
-                        .build();
-
-        HttpResponse<String> response =
-                HTTP.send(
-                        request,
-                        HttpResponse.BodyHandlers.ofString(
-                                StandardCharsets.UTF_8
-                        )
-                );
+        String url =
+                CDAS +
+                "/dataviews/sp_phys/datasets/" +
+                enc(DATASET) +
+                "/data/" +
+                startText +
+                "," +
+                endText +
+                "/" +
+                enc(VARIABLE) +
+                "?format=csv";
 
         System.out.println(
-                "CDAS POST HTTP status: " +
-                response.statusCode()
+                "REST URL: " +
+                url
         );
 
-        if (response.statusCode() < 200 ||
-                response.statusCode() >= 300) {
-
-            throw new RuntimeException(
-                    "CDAS POST failed: HTTP " +
-                    response.statusCode() +
-                    " — " +
-                    compact(response.body())
-            );
-        }
-
-        String resultXml =
-                response.body();
-
-        atomicWrite(
-                DATA_DIR.resolve("cdas-response.xml"),
-                resultXml
-        );
-
-        /*
-         * CDAS returns FileDescription elements.
-         * The Name element contains the URL of the generated file.
-         */
-        String fileUrl =
-                firstElementText(
-                        resultXml,
-                        "FileDescription",
-                        "Name"
-                );
-
-        if (fileUrl == null ||
-                fileUrl.isBlank()) {
-
-            throw new RuntimeException(
-                    "CDAS response contains no FileDescription/Name.\n" +
-                    compact(resultXml)
-            );
-        }
-
-        System.out.println(
-                "Generated CSV URL: " +
-                fileUrl
-        );
-
-        String csv =
-                get(fileUrl);
-
-        return csv;
+        return get(url);
     }
 
-    /**
-     * Check whether the returned CSV contains actual records.
+    /*
+     * CDAWeb REST uses timestamps such as:
+     *
+     * 20250630T171959Z
      */
-    private static boolean containsData(String csv) {
+    private static String compactTime(
+            Instant time) {
 
-        if (csv == null || csv.isBlank()) {
+        String s =
+                time.toString();
+
+        /*
+         * Remove fractional seconds.
+         */
+        int dot =
+                s.indexOf('.');
+
+        if (dot >= 0) {
+            s = s.substring(0, dot) + "Z";
+        }
+
+        /*
+         * 2025-06-30T17:19:59Z
+         * ->
+         * 20250630T171959Z
+         */
+        return s
+                .replace("-", "")
+                .replace(":", "");
+    }
+
+    private static boolean containsData(
+            String csv) {
+
+        if (csv == null ||
+                csv.isBlank()) {
             return false;
         }
 
         String[] lines =
                 csv.split("\\R");
 
-        int nonEmpty = 0;
+        int usefulLines = 0;
 
         for (String line : lines) {
 
-            if (!line.trim().isEmpty()) {
-                nonEmpty++;
+            line = line.trim();
 
-                /*
-                 * A real CSV response should contain
-                 * more than just a header.
-                 */
-                if (nonEmpty >= 2) {
-                    return true;
-                }
+            if (line.isEmpty()) {
+                continue;
+            }
+
+            if (line.startsWith("#")) {
+                continue;
+            }
+
+            usefulLines++;
+
+            if (usefulLines >= 2) {
+                return true;
             }
         }
 
         return false;
     }
 
-    /**
-     * Convert the CDAS CSV into a deliberately simple JSON file.
+    /*
+     * Convert the CDAWeb CSV to a simple JSON structure.
      *
-     * We retain the original CSV rows as numeric arrays because
-     * the exact spectrum dimensionality is defined by the CDAWeb
-     * variable metadata. The first field is always the timestamp.
+     * The first CSV column is the timestamp.
+     * Remaining columns are retained as numeric values.
      */
     private static String csvToJson(
             String csv,
@@ -478,18 +412,14 @@ public class AKRCdawebDownloader {
                 continue;
             }
 
-            /*
-             * Skip obvious textual header/comment lines.
-             */
-            if (line.startsWith("#") ||
-                    line.toLowerCase().startsWith("time")) {
+            if (line.startsWith("#")) {
                 continue;
             }
 
             String[] fields =
                     splitCsv(line);
 
-            if (fields.length == 0) {
+            if (fields.length < 2) {
                 continue;
             }
 
@@ -506,41 +436,46 @@ public class AKRCdawebDownloader {
             row.append("{");
             row.append("\"time\":\"");
             row.append(jsonEscape(timestamp));
-            row.append("\"");
+            row.append("\",\"values\":[");
 
-            /*
-             * Keep all remaining CSV values as strings for now.
-             * This is intentional: spectrum rows can contain
-             * fill values and multidimensional values.
-             */
-            row.append(",\"values\":[");
+            boolean firstValue = true;
 
-            for (int i = 1; i < fields.length; i++) {
-
-                if (i > 1) {
-                    row.append(",");
-                }
+            for (int i = 1;
+                 i < fields.length;
+                 i++) {
 
                 String value =
                         fields[i].trim();
+
+                if (value.isEmpty()) {
+                    continue;
+                }
+
+                if (!firstValue) {
+                    row.append(",");
+                }
 
                 if (isNumber(value)) {
                     row.append(value);
                 } else {
                     row.append("null");
                 }
+
+                firstValue = false;
             }
 
             row.append("]}");
 
-            records.add(row.toString());
+            records.add(
+                    row.toString()
+            );
         }
 
         if (records.isEmpty()) {
 
             throw new RuntimeException(
-                    "CDAS returned CSV, but no timestamped " +
-                    "spectrum records could be parsed."
+                    "CDAWeb returned CSV, but no " +
+                    "timestamped records could be parsed."
             );
         }
 
@@ -548,31 +483,49 @@ public class AKRCdawebDownloader {
                 new StringBuilder();
 
         json.append("{\n");
-        json.append("  \"dataset\": \"");
-        json.append(DATASET);
-        json.append("\",\n");
 
-        json.append("  \"variable\": \"");
-        json.append(VARIABLE);
-        json.append("\",\n");
+        json.append(
+                "  \"dataset\": \"" +
+                DATASET +
+                "\",\n"
+        );
 
-        json.append("  \"content_variable\": \"");
-        json.append(CONTENT);
-        json.append("\",\n");
+        json.append(
+                "  \"variable\": \"" +
+                VARIABLE +
+                "\",\n"
+        );
 
-        json.append("  \"start\": \"");
-        json.append(start);
-        json.append("\",\n");
+        json.append(
+                "  \"content_variable\": \"" +
+                CONTENT +
+                "\",\n"
+        );
 
-        json.append("  \"end\": \"");
-        json.append(end);
-        json.append("\",\n");
+        json.append(
+                "  \"start\": \"" +
+                start +
+                "\",\n"
+        );
 
-        json.append("  \"source\": \"NASA CDAWeb CDAS REST\",\n");
+        json.append(
+                "  \"end\": \"" +
+                end +
+                "\",\n"
+        );
 
-        json.append("  \"data\": [\n");
+        json.append(
+                "  \"source\": " +
+                "\"NASA CDAWeb CDAS REST\",\n"
+        );
 
-        for (int i = 0; i < records.size(); i++) {
+        json.append(
+                "  \"data\": [\n"
+        );
+
+        for (int i = 0;
+             i < records.size();
+             i++) {
 
             if (i > 0) {
                 json.append(",\n");
@@ -588,10 +541,8 @@ public class AKRCdawebDownloader {
         return json.toString();
     }
 
-    /**
-     * Simple CSV splitter supporting quoted fields.
-     */
-    private static String[] splitCsv(String line) {
+    private static String[] splitCsv(
+            String line) {
 
         List<String> fields =
                 new ArrayList<>();
@@ -601,9 +552,12 @@ public class AKRCdawebDownloader {
 
         boolean quoted = false;
 
-        for (int i = 0; i < line.length(); i++) {
+        for (int i = 0;
+             i < line.length();
+             i++) {
 
-            char c = line.charAt(i);
+            char c =
+                    line.charAt(i);
 
             if (c == '"') {
                 quoted = !quoted;
@@ -633,13 +587,78 @@ public class AKRCdawebDownloader {
         );
     }
 
+    private static Instant[] coverage(
+            String json) {
+
+        String start =
+                value(
+                        json,
+                        "startDate"
+                );
+
+        String stop =
+                value(
+                        json,
+                        "stopDate"
+                );
+
+        if (start == null ||
+                stop == null) {
+
+            throw new RuntimeException(
+                    "CDAWeb /info response does not contain " +
+                    "startDate/stopDate."
+            );
+        }
+
+        try {
+
+            return new Instant[] {
+                    Instant.parse(start),
+                    Instant.parse(stop)
+            };
+
+        } catch (Exception e) {
+
+            throw new RuntimeException(
+                    "Cannot parse coverage dates: " +
+                    start +
+                    " / " +
+                    stop
+            );
+        }
+    }
+
+    private static String value(
+            String json,
+            String key) {
+
+        Pattern pattern =
+                Pattern.compile(
+                        "\\\"" +
+                        Pattern.quote(key) +
+                        "\\\"\\s*:\\s*\\\"([^\\\"]+)\\\""
+                );
+
+        Matcher matcher =
+                pattern.matcher(json);
+
+        return matcher.find()
+                ? matcher.group(1)
+                : null;
+    }
+
     private static boolean looksLikeTimestamp(
             String value) {
 
         try {
+
             Instant.parse(value);
+
             return true;
+
         } catch (Exception e) {
+
             return false;
         }
     }
@@ -664,179 +683,6 @@ public class AKRCdawebDownloader {
         }
     }
 
-    /**
-     * Parse dataset coverage from CDAWeb XML.
-     */
-    private static Instant[] parseCoverage(
-            String xml) {
-
-        String start =
-                firstElementText(
-                        xml,
-                        "TimeInterval",
-                        "Start"
-                );
-
-        String end =
-                firstElementText(
-                        xml,
-                        "TimeInterval",
-                        "End"
-                );
-
-        /*
-         * Some CDAWeb responses may use different
-         * names for the dataset interval.
-         */
-        if (start == null) {
-            start =
-                    firstElementText(
-                            xml,
-                            "Start"
-                    );
-        }
-
-        if (end == null) {
-            end =
-                    firstElementText(
-                            xml,
-                            "End"
-                    );
-        }
-
-        if (start == null ||
-                end == null) {
-
-            throw new RuntimeException(
-                    "Cannot find dataset coverage in CDAWeb response."
-            );
-        }
-
-        try {
-
-            return new Instant[] {
-                    Instant.parse(start),
-                    Instant.parse(end)
-            };
-
-        } catch (Exception e) {
-
-            throw new RuntimeException(
-                    "Cannot parse coverage dates: " +
-                    start +
-                    " / " +
-                    end
-            );
-        }
-    }
-
-    /**
-     * Return text of the first matching child element.
-     */
-    private static String firstElementText(
-            String xml,
-            String parentName,
-            String childName) {
-
-        try {
-
-            Document doc =
-                    DocumentBuilderFactory
-                            .newInstance()
-                            .newDocumentBuilder()
-                            .parse(
-                                    new java.io.ByteArrayInputStream(
-                                            xml.getBytes(
-                                                    StandardCharsets.UTF_8
-                                            )
-                                    )
-                            );
-
-            NodeList parents =
-                    doc.getElementsByTagNameNS(
-                            "*",
-                            parentName
-                    );
-
-            if (parents.getLength() == 0) {
-                return null;
-            }
-
-            org.w3c.dom.Node parent =
-                    parents.item(0);
-
-            NodeList children =
-                    ((org.w3c.dom.Element) parent)
-                            .getElementsByTagNameNS(
-                                    "*",
-                                    childName
-                            );
-
-            if (children.getLength() == 0) {
-                return null;
-            }
-
-            return children
-                    .item(0)
-                    .getTextContent()
-                    .trim();
-
-        } catch (Exception e) {
-
-            throw new RuntimeException(
-                    "Cannot parse CDAWeb XML: " +
-                    e.getMessage(),
-                    e
-            );
-        }
-    }
-
-    /**
-     * Return text of the first element with this name.
-     */
-    private static String firstElementText(
-            String xml,
-            String elementName) {
-
-        try {
-
-            Document doc =
-                    DocumentBuilderFactory
-                            .newInstance()
-                            .newDocumentBuilder()
-                            .parse(
-                                    new java.io.ByteArrayInputStream(
-                                            xml.getBytes(
-                                                    StandardCharsets.UTF_8
-                                            )
-                                    )
-                            );
-
-            NodeList nodes =
-                    doc.getElementsByTagNameNS(
-                            "*",
-                            elementName
-                    );
-
-            if (nodes.getLength() == 0) {
-                return null;
-            }
-
-            return nodes
-                    .item(0)
-                    .getTextContent()
-                    .trim();
-
-        } catch (Exception e) {
-
-            throw new RuntimeException(
-                    "Cannot parse CDAWeb XML: " +
-                    e.getMessage(),
-                    e
-            );
-        }
-    }
-
     private static String get(
             String url) {
 
@@ -844,8 +690,12 @@ public class AKRCdawebDownloader {
 
             HttpRequest request =
                     HttpRequest.newBuilder()
-                            .uri(URI.create(url))
-                            .timeout(Duration.ofMinutes(5))
+                            .uri(
+                                    URI.create(url)
+                            )
+                            .timeout(
+                                    Duration.ofMinutes(5)
+                            )
                             .header(
                                     "Accept",
                                     "*/*"
@@ -856,13 +706,14 @@ public class AKRCdawebDownloader {
             HttpResponse<String> response =
                     HTTP.send(
                             request,
-                            HttpResponse.BodyHandlers.ofString(
-                                    StandardCharsets.UTF_8
-                            )
+                            HttpResponse.BodyHandlers
+                                    .ofString(
+                                            StandardCharsets.UTF_8
+                                    )
                     );
 
             System.out.println(
-                    "GET HTTP status: " +
+                    "HTTP status: " +
                     response.statusCode()
             );
 
@@ -873,7 +724,9 @@ public class AKRCdawebDownloader {
                         "HTTP " +
                         response.statusCode() +
                         " — " +
-                        compact(response.body())
+                        compact(
+                                response.body()
+                        )
                 );
             }
 
@@ -892,8 +745,7 @@ public class AKRCdawebDownloader {
             Thread.currentThread().interrupt();
 
             throw new RuntimeException(
-                    "Request interrupted",
-                    e
+                    "Request interrupted"
             );
         }
     }
@@ -925,8 +777,10 @@ public class AKRCdawebDownloader {
                 Files.move(
                         tmp,
                         path,
-                        StandardCopyOption.REPLACE_EXISTING,
-                        StandardCopyOption.ATOMIC_MOVE
+                        StandardCopyOption
+                                .REPLACE_EXISTING,
+                        StandardCopyOption
+                                .ATOMIC_MOVE
                 );
 
             } catch (
@@ -935,7 +789,8 @@ public class AKRCdawebDownloader {
                 Files.move(
                         tmp,
                         path,
-                        StandardCopyOption.REPLACE_EXISTING
+                        StandardCopyOption
+                                .REPLACE_EXISTING
                 );
             }
 
@@ -945,8 +800,7 @@ public class AKRCdawebDownloader {
                     "Cannot write " +
                     path +
                     ": " +
-                    e.getMessage(),
-                    e
+                    e.getMessage()
             );
         }
     }
@@ -964,8 +818,14 @@ public class AKRCdawebDownloader {
             String value) {
 
         return value
-                .replace("\\", "\\\\")
-                .replace("\"", "\\\"");
+                .replace(
+                        "\\",
+                        "\\\\"
+                )
+                .replace(
+                        "\"",
+                        "\\\""
+                );
     }
 
     private static String compact(
@@ -983,19 +843,17 @@ public class AKRCdawebDownloader {
                         )
                         .trim();
 
-        if (value.length() > 1500) {
-
-            return value.substring(0, 1500) +
-                    "...";
-        }
-
-        return value;
+        return value.length() > 1500
+                ? value.substring(0, 1500) + "..."
+                : value;
     }
 
     private static void parseArgs(
             String[] args) {
 
-        for (int i = 0; i < args.length; i++) {
+        for (int i = 0;
+             i < args.length;
+             i++) {
 
             switch (args[i]) {
 
@@ -1005,7 +863,9 @@ public class AKRCdawebDownloader {
                 case "--hours":
 
                     if (++i >= args.length) {
-                        die("--hours needs a value");
+                        die(
+                                "--hours needs a value"
+                        );
                     }
 
                     hours =
@@ -1020,7 +880,7 @@ public class AKRCdawebDownloader {
                     System.out.println(
                             "java -cp downloader/out " +
                             "AKRCdawebDownloader " +
-                            "[--once] [--hours 24]"
+                            "[--once] [--hours 1]"
                     );
 
                     System.exit(0);
@@ -1037,7 +897,9 @@ public class AKRCdawebDownloader {
         }
 
         if (hours <= 0) {
-            die("hours must be > 0");
+            die(
+                    "hours must be > 0"
+            );
         }
     }
 
