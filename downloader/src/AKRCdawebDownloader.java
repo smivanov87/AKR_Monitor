@@ -336,7 +336,7 @@ public class AKRCdawebDownloader {
                     enc(VARIABLE + "," + CONTENT);
         }
 
-        url += "&format=json";
+        url += "&format=csv";
 
         return url;
     }
