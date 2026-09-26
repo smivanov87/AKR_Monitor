@@ -1,31 +1,52 @@
 import java.io.IOException;
 import java.net.URI;
-import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+/**
+ * AKR Monitor CDAWeb downloader
+ *
+ * Dataset:
+ *   ERG_PWE_HFA_L2_SPEC_HIGH
+ *
+ * Variable:
+ *   spectra_e_mix
+ *
+ * Content:
+ *   e_mix_content
+ *
+ * Data source:
+ *   NASA CDAWeb REST Web Services
+ *
+ * The CDAWeb REST "format=csv" request returns a small XML DataResult
+ * containing a temporary CSV URL. This program:
+ *
+ *   1. Reads dataset coverage through HAPI.
+ *   2. Requests the last hour through CDAWeb REST.
+ *   3. Extracts the temporary CSV URL from DataResult XML.
+ *   4. Downloads the actual CSV.
+ *   5. Parses the CSV.
+ *   6. Writes data/akr.json.
+ */
 public class AKRCdawebDownloader {
 
-    /*
-     * ============================================================
-     * Configuration
-     * ============================================================
-     */
-
-    private static final String HAPI =
-            "https://cdaweb.gsfc.nasa.gov/hapi";
-
-    private static final String CDAS =
-            "https://cdaweb.gsfc.nasa.gov/WS/cdasr/1";
+    // ============================================================
+    // Configuration
+    // ============================================================
 
     private static final String DATASET =
             "ERG_PWE_HFA_L2_SPEC_HIGH";
@@ -33,99 +54,117 @@ public class AKRCdawebDownloader {
     private static final String VARIABLE =
             "spectra_e_mix";
 
-    private static final String CONTENT =
+    private static final String CONTENT_VARIABLE =
             "e_mix_content";
 
+    private static final String HAPI_INFO_URL =
+            "https://cdaweb.gsfc.nasa.gov/hapi/info?id=" + DATASET;
+
+    private static final String REST_BASE =
+            "https://cdaweb.gsfc.nasa.gov/WS/cdasr/1/dataviews/sp_phys/datasets/";
+
     private static final Path DATA_DIR =
-            Path.of("data");
+            Paths.get("data");
+
+    private static final Path AKR_JSON =
+            DATA_DIR.resolve("akr.json");
+
+    private static final Path RAW_CSV =
+            DATA_DIR.resolve("akr-raw.csv");
+
+    private static final Path DATASET_INFO =
+            DATA_DIR.resolve("dataset-info.json");
+
+    private static final Path METADATA_JSON =
+            DATA_DIR.resolve("metadata.json");
 
     /*
-     * We only make small CDAWeb requests.
-     *
-     * This is intentional. Large spectrum requests previously
-     * caused network timeouts.
+     * Keep this reasonably large because CDAWeb may generate a
+     * multi-megabyte CSV before returning the temporary-file URL.
      */
-    private static final int PROBE_MINUTES = 60;
+    private static final Duration HTTP_TIMEOUT =
+            Duration.ofSeconds(90);
 
-    /*
-     * Search backwards at most this many days.
-     *
-     * This prevents GitHub Actions from running indefinitely if
-     * CDAWeb has a metadata/data gap.
-     */
-    private static final int SEARCH_DAYS = 30;
+    private static final int MAX_RETRIES = 3;
 
-    /*
-     * Final data request.
-     *
-     * Keep this small for now until we have confirmed the exact
-     * CSV representation returned by CDAWeb for spectra_e_mix.
-     */
-    private static final int DOWNLOAD_HOURS = 1;
+    private static final DateTimeFormatter CDAS_TIME =
+            DateTimeFormatter.ofPattern(
+                    "yyyyMMdd'T'HHmmss'Z'",
+                    Locale.US
+            ).withZone(ZoneOffset.UTC);
 
-    private static final HttpClient HTTP =
-            HttpClient.newBuilder()
-                    .connectTimeout(Duration.ofSeconds(30))
-                    .followRedirects(
-                            HttpClient.Redirect.NORMAL
-                    )
-                    .build();
+    // XML returned by CDAWeb contains:
+    //
+    // <Name>https://cdaweb.gsfc.nasa.gov/tmp/...csv</Name>
+    //
+    private static final Pattern TEMP_CSV_PATTERN =
+            Pattern.compile(
+                    "<Name>\\s*(https?://[^<]+\\.csv)\\s*</Name>",
+                    Pattern.CASE_INSENSITIVE
+            );
 
+    private static final Pattern HAPI_START_PATTERN =
+            Pattern.compile(
+                    "\"startDateTime\"\\s*:\\s*\"([^\"]+)\"",
+                    Pattern.CASE_INSENSITIVE
+            );
 
-    /*
-     * ============================================================
-     * Main
-     * ============================================================
-     */
+    private static final Pattern HAPI_END_PATTERN =
+            Pattern.compile(
+                    "\"stopDateTime\"\\s*:\\s*\"([^\"]+)\"",
+                    Pattern.CASE_INSENSITIVE
+            );
+
+    // ============================================================
+    // HTTP client
+    // ============================================================
+
+    private static final HttpClient HTTP = HttpClient.newBuilder()
+            .connectTimeout(HTTP_TIMEOUT)
+            .followRedirects(HttpClient.Redirect.NORMAL)
+            .build();
+
+    // ============================================================
+    // Main
+    // ============================================================
 
     public static void main(String[] args) {
 
-        System.out.println(
-                "=========================================="
-        );
+        boolean once = false;
 
-        System.out.println(
-                "AKR Monitor CDAWeb downloader"
-        );
-
-        System.out.println(
-                "=========================================="
-        );
-
-        System.out.println(
-                "Dataset : " + DATASET
-        );
-
-        System.out.println(
-                "Variable: " + VARIABLE
-        );
-
-        System.out.println(
-                "Content : " + CONTENT
-        );
-
-        System.out.println(
-                "Service : NASA CDAWeb REST"
-        );
-
-        System.out.println();
+        for (String arg : args) {
+            if ("--once".equalsIgnoreCase(arg)) {
+                once = true;
+            }
+        }
 
         try {
+            System.out.println("==========================================");
+            System.out.println("AKR Monitor CDAWeb downloader");
+            System.out.println("==========================================");
+            System.out.println();
+            System.out.println("Dataset : " + DATASET);
+            System.out.println("Variable: " + VARIABLE);
+            System.out.println("Content : " + CONTENT_VARIABLE);
+            System.out.println("Service : NASA CDAWeb REST");
+            System.out.println();
 
             Files.createDirectories(DATA_DIR);
 
-            cycle();
+            downloadLatestData();
+
+            System.out.println();
+            System.out.println("==========================================");
+            System.out.println("Downloader finished successfully.");
+            System.out.println("==========================================");
 
         } catch (Exception e) {
 
             System.err.println();
-            System.err.println(
-                    "DOWNLOAD FAILED"
-            );
-
-            System.err.println(
-                    e.getMessage()
-            );
+            System.err.println("==========================================");
+            System.err.println("DOWNLOADER FAILED");
+            System.err.println("==========================================");
+            System.err.println(e.getMessage());
 
             e.printStackTrace();
 
@@ -133,698 +172,467 @@ public class AKRCdawebDownloader {
         }
     }
 
+    // ============================================================
+    // Main download procedure
+    // ============================================================
 
-    /*
-     * ============================================================
-     * Main download cycle
-     * ============================================================
-     */
+    private static void downloadLatestData() throws Exception {
 
-    private static void cycle() {
-
-        /*
-         * --------------------------------------------------------
-         * 1. Read HAPI metadata
-         * --------------------------------------------------------
-         */
-
-        String infoUrl =
-                HAPI +
-                "/info?id=" +
-                enc(DATASET);
-
-        System.out.println(
-                "Reading CDAWeb dataset coverage..."
-        );
-
-        System.out.println(infoUrl);
-
-        String info =
-                get(infoUrl);
-
-        atomicWrite(
-                DATA_DIR.resolve(
-                        "dataset-info.json"
-                ),
-                info
-        );
-
-        Instant[] coverage =
-                coverage(info);
-
-        Instant coverageStart =
-                coverage[0];
-
-        Instant coverageEnd =
-                coverage[1];
-
+        System.out.println("Reading CDAWeb dataset coverage...");
+        System.out.println(HAPI_INFO_URL);
         System.out.println();
 
-        System.out.println(
-                "Dataset coverage:"
+        String infoJson = httpGet(HAPI_INFO_URL);
+
+        Files.writeString(
+                DATASET_INFO,
+                infoJson,
+                StandardCharsets.UTF_8
         );
 
-        System.out.println(
-                "  START: " +
-                coverageStart
+        System.out.println("HAPI information received.");
+
+        String coverageStart = extractRequired(
+                HAPI_START_PATTERN,
+                infoJson,
+                "startDateTime"
         );
 
-        System.out.println(
-                "  END  : " +
-                coverageEnd
+        String coverageEnd = extractRequired(
+                HAPI_END_PATTERN,
+                infoJson,
+                "stopDateTime"
         );
 
         System.out.println();
+        System.out.println("Dataset coverage:");
+        System.out.println("  START: " + coverageStart);
+        System.out.println("  END  : " + coverageEnd);
+        System.out.println();
 
+        Instant end = Instant.parse(coverageEnd);
 
         /*
-         * --------------------------------------------------------
-         * 2. Search backwards using ONLY one-hour requests
-         * --------------------------------------------------------
+         * Instead of probing hour after hour backwards, use the final
+         * hour of the published dataset directly.
+         *
+         * This avoids the previous situation where CDAWeb generated
+         * many large temporary CSV files while the downloader was
+         * searching for data.
          */
+        Instant start = end.minus(Duration.ofHours(1));
 
-        Instant latest =
-                findLatestData(
-                        coverageStart,
-                        coverageEnd
+        Instant coverageStartInstant =
+                Instant.parse(coverageStart);
+
+        if (start.isBefore(coverageStartInstant)) {
+            start = coverageStartInstant;
+        }
+
+        System.out.println(
+                "Request interval: "
+                        + start
+                        + " -> "
+                        + end
+        );
+
+        String compactStart = CDAS_TIME.format(start);
+        String compactEnd = CDAS_TIME.format(end);
+
+        String requestUrl =
+                REST_BASE
+                        + DATASET
+                        + "/data/"
+                        + compactStart
+                        + ","
+                        + compactEnd
+                        + "/"
+                        + VARIABLE
+                        + "?format=csv";
+
+        System.out.println();
+        System.out.println("CDAWeb REST request:");
+        System.out.println(requestUrl);
+        System.out.println();
+
+        /*
+         * IMPORTANT:
+         *
+         * CDAWeb returns XML here, not the actual CSV.
+         */
+        String dataResultXml = httpGet(requestUrl);
+
+        System.out.println(
+                "CDAWeb DataResult response size: "
+                        + dataResultXml.getBytes(StandardCharsets.UTF_8).length
+                        + " bytes"
+        );
+
+        String temporaryCsvUrl =
+                extractRequired(
+                        TEMP_CSV_PATTERN,
+                        dataResultXml,
+                        "temporary CSV URL"
                 );
 
-        if (latest == null) {
+        System.out.println();
+        System.out.println("Temporary CSV URL:");
+        System.out.println(temporaryCsvUrl);
+        System.out.println();
 
-            throw new RuntimeException(
-                    "No usable " +
-                    VARIABLE +
-                    " data found within the last " +
-                    SEARCH_DAYS +
-                    " days of CDAWeb coverage."
+        /*
+         * Now download the actual CSV file.
+         */
+        String csv = httpGet(temporaryCsvUrl);
+
+        System.out.println(
+                "Actual CSV size: "
+                        + csv.getBytes(StandardCharsets.UTF_8).length
+                        + " bytes"
+        );
+
+        if (csv.trim().isEmpty()) {
+            throw new IOException(
+                    "CDAWeb returned an empty CSV file."
             );
         }
 
+        /*
+         * Save the raw CSV for inspection/debugging.
+         */
+        Files.writeString(
+                RAW_CSV,
+                csv,
+                StandardCharsets.UTF_8
+        );
+
+        System.out.println(
+                "Saved: " + RAW_CSV
+        );
 
         /*
-         * --------------------------------------------------------
-         * 3. Download one small interval
-         * --------------------------------------------------------
+         * Show the first few lines. This is extremely useful if the
+         * CDAWeb CSV format changes.
          */
-
-        Instant start =
-                latest.minus(
-                        Duration.ofHours(
-                                DOWNLOAD_HOURS
-                        )
-                );
-
-        if (start.isBefore(coverageStart)) {
-
-            start = coverageStart;
-        }
-
-        System.out.println();
-
-        System.out.println(
-                "Selected data interval:"
-        );
-
-        System.out.println(
-                "  START: " + start
-        );
-
-        System.out.println(
-                "  END  : " + latest
-        );
-
-
-        String url =
-                dataUrl(
-                        start,
-                        latest
-                );
-
-        System.out.println();
-
-        System.out.println(
-                "Downloading selected data..."
-        );
-
-        System.out.println(url);
-
-        String csv =
-                get(url);
-
+        printCsvPreview(csv);
 
         /*
-         * --------------------------------------------------------
-         * 4. Always save the raw response
-         * --------------------------------------------------------
-         *
-         * This is extremely useful for diagnosing the CDAWeb
-         * representation without having to repeat the request.
+         * Convert CSV to the compact JSON used by the web page.
          */
-
-        atomicWrite(
-                DATA_DIR.resolve(
-                        "akr-raw.csv"
-                ),
-                csv
-        );
-
-        System.out.println();
-
-        System.out.println(
-                "Raw response size: " +
-                csv.length() +
-                " bytes"
-        );
-
-        System.out.println();
-
-        System.out.println(
-                "----- CDAWeb response preview -----"
-        );
-
-        System.out.println(
-                compact(csv, 4000)
-        );
-
-        System.out.println(
-                "----- End response preview -----"
-        );
-
-
-        /*
-         * --------------------------------------------------------
-         * 5. Parse the CSV
-         * --------------------------------------------------------
-         */
-
-        CsvResult result =
+        List<CsvRecord> records =
                 parseCsv(csv);
 
         System.out.println();
-
         System.out.println(
-                "CSV records detected: " +
-                result.records.size()
+                "Parsed timestamped records: "
+                        + records.size()
         );
 
-        System.out.println(
-                "Numeric spectrum values detected: " +
-                result.numericValues
-        );
-
-
-        /*
-         * --------------------------------------------------------
-         * 6. Save AKR JSON
-         * --------------------------------------------------------
-         */
-
-        String akrJson =
-                makeAkrJson(
-                        result,
-                        start,
-                        latest,
-                        coverageStart,
-                        coverageEnd
-                );
-
-        atomicWrite(
-                DATA_DIR.resolve(
-                        "akr.json"
-                ),
-                akrJson
-        );
-
-
-        /*
-         * --------------------------------------------------------
-         * 7. Save metadata
-         * --------------------------------------------------------
-         */
-
-        String meta =
-                "{\n" +
-                "  \"dataset\": \"" +
-                DATASET +
-                "\",\n" +
-
-                "  \"variable\": \"" +
-                VARIABLE +
-                "\",\n" +
-
-                "  \"content_variable\": \"" +
-                CONTENT +
-                "\",\n" +
-
-                "  \"downloaded_start\": \"" +
-                start +
-                "\",\n" +
-
-                "  \"downloaded_end\": \"" +
-                latest +
-                "\",\n" +
-
-                "  \"dataset_coverage_start\": \"" +
-                coverageStart +
-                "\",\n" +
-
-                "  \"dataset_coverage_end\": \"" +
-                coverageEnd +
-                "\",\n" +
-
-                "  \"csv_records\": " +
-                result.records.size() +
-                ",\n" +
-
-                "  \"numeric_values\": " +
-                result.numericValues +
-                ",\n" +
-
-                "  \"downloaded_at\": \"" +
-                Instant.now() +
-                "\",\n" +
-
-                "  \"source\": " +
-                "\"NASA CDAWeb REST\"\n" +
-
-                "}\n";
-
-        atomicWrite(
-                DATA_DIR.resolve(
-                        "metadata.json"
-                ),
-                meta
-        );
-
-
-        /*
-         * --------------------------------------------------------
-         * 8. Finish
-         * --------------------------------------------------------
-         */
-
-        if (result.records.isEmpty()) {
-
-            throw new RuntimeException(
-                    "CDAWeb returned HTTP 200, " +
-                    "but no CSV data records were detected. " +
-                    "The complete response was saved to " +
-                    "data/akr-raw.csv."
+        if (records.isEmpty()) {
+            throw new IOException(
+                    "The downloaded CSV contains no timestamped records."
             );
         }
+
+        writeAkrJson(
+                coverageStart,
+                coverageEnd,
+                start,
+                end,
+                records
+        );
+
+        writeMetadata(
+                coverageStart,
+                coverageEnd,
+                start,
+                end,
+                records.size()
+        );
 
         System.out.println();
-
-        System.out.println(
-                "SUCCESS"
-        );
-
-        System.out.println(
-                "Saved: data/akr.json"
-        );
-
-        System.out.println(
-                "Saved: data/akr-raw.csv"
-        );
-
-        System.out.println(
-                "Saved: data/metadata.json"
-        );
+        System.out.println("Created:");
+        System.out.println("  " + AKR_JSON);
+        System.out.println("  " + METADATA_JSON);
     }
 
+    // ============================================================
+    // HTTP GET
+    // ============================================================
 
-    /*
-     * ============================================================
-     * Find latest usable data
-     * ============================================================
-     *
-     * We deliberately DO NOT try 1h -> 6h -> 24h -> 72h.
-     *
-     * Every request is exactly one hour.
-     *
-     * This prevents the timeout behaviour we observed.
-     */
+    private static String httpGet(String url)
+            throws IOException, InterruptedException {
 
-    private static Instant findLatestData(
-            Instant coverageStart,
-            Instant coverageEnd) {
+        Exception lastException = null;
 
-        Instant end =
-                coverageEnd;
-
-        Instant minimum =
-                coverageEnd.minus(
-                        Duration.ofDays(
-                                SEARCH_DAYS
-                        )
-                );
-
-        if (minimum.isBefore(coverageStart)) {
-
-            minimum = coverageStart;
-        }
-
-
-        while (
-                end.isAfter(minimum)
-        ) {
-
-            Instant start =
-                    end.minus(
-                            Duration.ofMinutes(
-                                    PROBE_MINUTES
-                            )
-                    );
-
-            if (start.isBefore(minimum)) {
-
-                start = minimum;
-            }
+        for (int attempt = 1;
+             attempt <= MAX_RETRIES;
+             attempt++) {
 
             System.out.println(
-                    "Probe interval: " +
-                    start +
-                    " -> " +
-                    end
+                    "HTTP GET attempt "
+                            + attempt
+                            + "/"
+                            + MAX_RETRIES
             );
-
-
-            String url =
-                    dataUrl(
-                            start,
-                            end
-                    );
-
-            System.out.println(
-                    "REST URL: " +
-                    url
-            );
-
 
             try {
 
-                String csv =
-                        get(url);
+                HttpRequest request =
+                        HttpRequest.newBuilder()
+                                .uri(URI.create(url))
+                                .timeout(HTTP_TIMEOUT)
+                                .header(
+                                        "User-Agent",
+                                        "AKR-Monitor/1.0"
+                                )
+                                .header(
+                                        "Accept",
+                                        "*/*"
+                                )
+                                .GET()
+                                .build();
 
-                System.out.println(
-                        "Probe response size: " +
-                        csv.length() +
-                        " bytes"
-                );
-
-
-                /*
-                 * IMPORTANT:
-                 *
-                 * Print the complete small response when it is
-                 * short. This lets us see exactly what CDAWeb
-                 * returns for a no-data interval.
-                 */
-
-                if (csv.length() <= 5000) {
-
-                    System.out.println(
-                            "Probe response:"
-                    );
-
-                    System.out.println(csv);
-                }
-
-
-                CsvResult result =
-                        parseCsv(csv);
-
-
-                if (
-                        !result.records.isEmpty()
-                ) {
-
-                    Instant latest =
-                            result.latestTime();
-
-                    if (latest != null) {
-
-                        System.out.println(
-                                "Usable data found: " +
-                                latest
+                HttpResponse<String> response =
+                        HTTP.send(
+                                request,
+                                HttpResponse.BodyHandlers.ofString(
+                                        StandardCharsets.UTF_8
+                                )
                         );
 
-                        return latest;
-                    }
-                }
-
                 System.out.println(
-                        "No timestamped CSV records."
+                        "HTTP status: "
+                                + response.statusCode()
                 );
 
+                if (response.statusCode() < 200
+                        || response.statusCode() >= 300) {
+
+                    throw new IOException(
+                            "HTTP "
+                                    + response.statusCode()
+                                    + " from "
+                                    + url
+                    );
+                }
+
+                return response.body();
 
             } catch (Exception e) {
 
-                System.out.println(
-                        "Probe failed: " +
-                        e.getMessage()
+                lastException = e;
+
+                System.err.println(
+                        "HTTP request failed: "
+                                + e.getMessage()
                 );
+
+                if (attempt < MAX_RETRIES) {
+
+                    long waitSeconds =
+                            5L * attempt;
+
+                    System.out.println(
+                            "Retrying in "
+                                    + waitSeconds
+                                    + " seconds..."
+                    );
+
+                    try {
+                        Thread.sleep(
+                                waitSeconds * 1000L
+                        );
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        throw ie;
+                    }
+                }
             }
-
-
-            /*
-             * Move backwards exactly one hour.
-             */
-
-            end = start;
         }
 
-        return null;
+        throw new IOException(
+                "HTTP request failed after "
+                        + MAX_RETRIES
+                        + " attempts: "
+                        + url,
+                lastException
+        );
     }
 
+    // ============================================================
+    // CSV parsing
+    // ============================================================
 
-    /*
-     * ============================================================
-     * CDAWeb REST URL
-     * ============================================================
-     */
-
-    private static String dataUrl(
-            Instant start,
-            Instant end) {
-
-        /*
-         * CDAWeb REST syntax:
-         *
-         * /dataviews/sp_phys/datasets/DATASET/data/
-         * START,END/VARIABLE?format=csv
-         */
-
-        return CDAS +
-                "/dataviews/sp_phys/datasets/" +
-                enc(DATASET) +
-                "/data/" +
-                compactTime(start) +
-                "," +
-                compactTime(end) +
-                "/" +
-                enc(VARIABLE) +
-                "?format=csv";
-    }
-
-
-    /*
-     * ============================================================
-     * HAPI coverage
-     * ============================================================
-     */
-
-    private static Instant[] coverage(
-            String json) {
-
-        String start =
-                value(
-                        json,
-                        "startDate"
-                );
-
-        String stop =
-                value(
-                        json,
-                        "stopDate"
-                );
-
-        if (
-                start == null ||
-                stop == null
-        ) {
-
-            throw new RuntimeException(
-                    "CDAWeb /info response does not contain " +
-                    "startDate/stopDate."
-            );
-        }
-
-        try {
-
-            return new Instant[] {
-
-                    Instant.parse(start),
-
-                    Instant.parse(stop)
-            };
-
-        } catch (Exception e) {
-
-            throw new RuntimeException(
-                    "Cannot parse CDAWeb coverage dates: " +
-                    start +
-                    " / " +
-                    stop
-            );
-        }
-    }
-
-
-    /*
-     * ============================================================
-     * CSV parsing
-     * ============================================================
-     */
-
-    private static CsvResult parseCsv(
+    private static List<CsvRecord> parseCsv(
             String csv) {
 
-        CsvResult result =
-                new CsvResult();
+        List<CsvRecord> result =
+                new ArrayList<>();
 
-        if (
-                csv == null ||
-                csv.isBlank()
-        ) {
+        String[] lines =
+                csv.replace("\r\n", "\n")
+                   .replace('\r', '\n')
+                   .split("\n");
 
+        int headerLine = -1;
+
+        /*
+         * Find the first useful CSV header.
+         */
+        for (int i = 0; i < lines.length; i++) {
+
+            String line = lines[i].trim();
+
+            if (line.isEmpty()) {
+                continue;
+            }
+
+            if (line.startsWith("#")) {
+                continue;
+            }
+
+            if (containsTimeWord(line)) {
+                headerLine = i;
+                break;
+            }
+        }
+
+        /*
+         * If there is no recognizable header, assume the first
+         * non-comment line is the header.
+         */
+        if (headerLine < 0) {
+
+            for (int i = 0; i < lines.length; i++) {
+
+                String line = lines[i].trim();
+
+                if (!line.isEmpty()
+                        && !line.startsWith("#")) {
+
+                    headerLine = i;
+                    break;
+                }
+            }
+        }
+
+        if (headerLine < 0) {
             return result;
         }
 
+        String header = lines[headerLine];
+
+        List<String> columns =
+                splitCsvLine(header);
+
+        int timeColumn =
+                findTimeColumn(columns);
 
         /*
-         * CDAWeb can return CSV with quoted fields.
-         *
-         * We therefore do not simply split every line on ",".
+         * If the header does not explicitly identify Time,
+         * CDAWeb CSV normally places time in column 0.
          */
+        if (timeColumn < 0) {
+            timeColumn = 0;
+        }
 
-        List<String> lines =
-                splitLines(csv);
+        for (int i = headerLine + 1;
+             i < lines.length;
+             i++) {
 
+            String line = lines[i].trim();
 
-        for (String line : lines) {
-
-            String trimmed =
-                    line.trim();
-
-            if (
-                    trimmed.isEmpty()
-            ) {
-
+            if (line.isEmpty()
+                    || line.startsWith("#")) {
                 continue;
             }
-
-
-            /*
-             * Ignore obvious comments.
-             */
-
-            if (
-                    trimmed.startsWith("#")
-            ) {
-
-                continue;
-            }
-
 
             List<String> fields =
-                    parseCsvLine(
-                            trimmed
-                    );
+                    splitCsvLine(line);
 
-
-            if (
-                    fields.isEmpty()
-            ) {
-
+            if (fields.size() <= timeColumn) {
                 continue;
             }
-
-
-            /*
-             * The first field should normally be the time.
-             */
 
             String timeText =
-                    clean(fields.get(0));
+                    clean(fields.get(timeColumn));
 
-
-            Instant timestamp =
-                    parseInstant(timeText);
-
-
-            if (timestamp == null) {
-
-                /*
-                 * Header or metadata line.
-                 */
-
+            if (!looksLikeTimestamp(timeText)) {
                 continue;
             }
 
+            Instant timestamp;
+
+            try {
+                timestamp =
+                        Instant.parse(timeText);
+            } catch (Exception e) {
+                continue;
+            }
 
             List<Double> values =
                     new ArrayList<>();
 
+            for (int c = 0;
+                 c < fields.size();
+                 c++) {
 
-            for (
-                    int i = 1;
-                    i < fields.size();
-                    i++
-            ) {
+                if (c == timeColumn) {
+                    continue;
+                }
 
-                String field =
-                        clean(fields.get(i));
+                String value =
+                        clean(fields.get(c));
 
+                /*
+                 * Some CSV representations can contain array
+                 * notation or empty values.
+                 */
+                if (value.isEmpty()
+                        || value.equalsIgnoreCase("NaN")
+                        || value.equalsIgnoreCase("null")) {
 
-                Double value =
-                        parseDouble(field);
+                    values.add(null);
+                    continue;
+                }
 
+                value =
+                        value.replace("[", "")
+                             .replace("]", "")
+                             .trim();
 
-                if (value != null) {
+                try {
+                    values.add(
+                            Double.parseDouble(value)
+                    );
+                } catch (NumberFormatException ignored) {
 
-                    values.add(value);
-
-                    result.numericValues++;
+                    /*
+                     * Non-numeric metadata columns are ignored.
+                     */
                 }
             }
 
+            if (!values.isEmpty()) {
 
-            /*
-             * Keep timestamped records even when a spectrum
-             * field contains non-numeric/fill representation.
-             */
-
-            result.records.add(
-                    new Record(
-                            timestamp,
-                            values
-                    )
-            );
+                result.add(
+                        new CsvRecord(
+                                timestamp,
+                                values
+                        )
+                );
+            }
         }
-
 
         return result;
     }
 
+    // ============================================================
+    // CSV helper
+    // ============================================================
 
-    /*
-     * ============================================================
-     * CSV line parser
-     * ============================================================
-     */
-
-    private static List<String> parseCsvLine(
+    private static List<String> splitCsvLine(
             String line) {
 
         List<String> fields =
@@ -833,39 +641,30 @@ public class AKRCdawebDownloader {
         StringBuilder current =
                 new StringBuilder();
 
-        boolean quoted =
-                false;
-
+        boolean inQuotes = false;
 
         for (int i = 0;
              i < line.length();
              i++) {
 
-            char c =
-                    line.charAt(i);
+            char ch = line.charAt(i);
 
+            if (ch == '"') {
 
-            if (c == '"') {
-
-                if (
-                        quoted &&
-                        i + 1 < line.length() &&
-                        line.charAt(i + 1) == '"'
-                ) {
+                if (inQuotes
+                        && i + 1 < line.length()
+                        && line.charAt(i + 1) == '"') {
 
                     current.append('"');
-
                     i++;
 
                 } else {
 
-                    quoted = !quoted;
+                    inQuotes = !inQuotes;
                 }
 
-            } else if (
-                    c == ',' &&
-                    !quoted
-            ) {
+            } else if (ch == ','
+                    && !inQuotes) {
 
                 fields.add(
                         current.toString()
@@ -875,10 +674,9 @@ public class AKRCdawebDownloader {
 
             } else {
 
-                current.append(c);
+                current.append(ch);
             }
         }
-
 
         fields.add(
                 current.toString()
@@ -887,595 +685,448 @@ public class AKRCdawebDownloader {
         return fields;
     }
 
+    private static boolean containsTimeWord(
+            String line) {
 
-    /*
-     * ============================================================
-     * Make AKR JSON
-     * ============================================================
-     *
-     * This is deliberately a simple, stable JSON structure.
-     *
-     * We retain:
-     *   time
-     *   values
-     *
-     * plus metadata.
-     */
+        String lower =
+                line.toLowerCase(Locale.ROOT);
 
-    private static String makeAkrJson(
-            CsvResult result,
-            Instant start,
-            Instant end,
-            Instant coverageStart,
-            Instant coverageEnd) {
+        return lower.contains("time");
+    }
 
-        StringBuilder out =
+    private static int findTimeColumn(
+            List<String> columns) {
+
+        for (int i = 0;
+             i < columns.size();
+             i++) {
+
+            String c =
+                    columns.get(i)
+                            .trim()
+                            .toLowerCase(Locale.ROOT);
+
+            if (c.equals("time")
+                    || c.contains("time")) {
+
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    private static String clean(
+            String value) {
+
+        String result =
+                value == null
+                        ? ""
+                        : value.trim();
+
+        if (result.length() >= 2
+                && result.startsWith("\"")
+                && result.endsWith("\"")) {
+
+            result =
+                    result.substring(
+                            1,
+                            result.length() - 1
+                    );
+        }
+
+        return result.trim();
+    }
+
+    private static boolean looksLikeTimestamp(
+            String value) {
+
+        if (value == null) {
+            return false;
+        }
+
+        return value.matches(
+                "\\d{4}-\\d{2}-\\d{2}T.*"
+        );
+    }
+
+    // ============================================================
+    // JSON writer
+    // ============================================================
+
+    private static void writeAkrJson(
+            String coverageStart,
+            String coverageEnd,
+            Instant requestedStart,
+            Instant requestedEnd,
+            List<CsvRecord> records)
+            throws IOException {
+
+        StringBuilder json =
                 new StringBuilder();
 
-        out.append("{\n");
+        json.append("{\n");
 
-        out.append(
-                "  \"dataset\": \"" +
-                DATASET +
-                "\",\n"
+        json.append(
+                "  \"dataset\": \""
         );
-
-        out.append(
-                "  \"variable\": \"" +
-                VARIABLE +
-                "\",\n"
+        json.append(
+                jsonEscape(DATASET)
         );
+        json.append("\",\n");
 
-        out.append(
-                "  \"content_variable\": \"" +
-                CONTENT +
-                "\",\n"
+        json.append(
+                "  \"variable\": \""
         );
+        json.append(
+                jsonEscape(VARIABLE)
+        );
+        json.append("\",\n");
 
-        out.append(
+        json.append(
+                "  \"content_variable\": \""
+        );
+        json.append(
+                jsonEscape(CONTENT_VARIABLE)
+        );
+        json.append("\",\n");
+
+        json.append(
                 "  \"source\": \"NASA CDAWeb REST\",\n"
         );
 
-        out.append(
-                "  \"downloaded_start\": \"" +
-                start +
-                "\",\n"
+        json.append(
+                "  \"coverage_start\": \""
         );
-
-        out.append(
-                "  \"downloaded_end\": \"" +
-                end +
-                "\",\n"
+        json.append(
+                jsonEscape(coverageStart)
         );
+        json.append("\",\n");
 
-        out.append(
-                "  \"dataset_coverage_start\": \"" +
-                coverageStart +
-                "\",\n"
+        json.append(
+                "  \"coverage_end\": \""
         );
-
-        out.append(
-                "  \"dataset_coverage_end\": \"" +
-                coverageEnd +
-                "\",\n"
+        json.append(
+                jsonEscape(coverageEnd)
         );
+        json.append("\",\n");
 
-        out.append(
-                "  \"downloaded_at\": \"" +
-                Instant.now() +
-                "\",\n"
+        json.append(
+                "  \"requested_start\": \""
         );
+        json.append(
+                requestedStart.toString()
+        );
+        json.append("\",\n");
 
-        out.append(
+        json.append(
+                "  \"requested_end\": \""
+        );
+        json.append(
+                requestedEnd.toString()
+        );
+        json.append("\",\n");
+
+        json.append(
+                "  \"record_count\": "
+        );
+        json.append(records.size());
+        json.append(",\n");
+
+        json.append(
                 "  \"records\": [\n"
         );
 
+        for (int i = 0;
+             i < records.size();
+             i++) {
 
-        for (
-                int i = 0;
-                i < result.records.size();
-                i++
-        ) {
+            CsvRecord record =
+                    records.get(i);
 
-            Record record =
-                    result.records.get(i);
+            json.append("    {\n");
 
-
-            out.append("    {\n");
-
-            out.append(
-                    "      \"time\": \"" +
-                    record.time +
-                    "\",\n"
+            json.append(
+                    "      \"time\": \""
             );
 
-            out.append(
+            json.append(
+                    record.time.toString()
+            );
+
+            json.append("\",\n");
+
+            json.append(
                     "      \"values\": ["
             );
 
-
-            for (
-                    int j = 0;
-                    j < record.values.size();
-                    j++
-            ) {
+            for (int j = 0;
+                 j < record.values.size();
+                 j++) {
 
                 if (j > 0) {
-
-                    out.append(", ");
+                    json.append(",");
                 }
 
                 Double value =
                         record.values.get(j);
 
-                if (
-                        value.isNaN() ||
-                        value.isInfinite()
-                ) {
+                if (value == null
+                        || value.isNaN()
+                        || value.isInfinite()) {
 
-                    out.append("null");
+                    json.append("null");
 
                 } else {
 
-                    out.append(
+                    json.append(
                             Double.toString(value)
                     );
                 }
             }
 
+            json.append("]\n");
+            json.append("    }");
 
-            out.append("]\n");
-
-            out.append("    }");
-
-
-            if (
-                    i + 1 <
-                    result.records.size()
-            ) {
-
-                out.append(",");
+            if (i < records.size() - 1) {
+                json.append(",");
             }
 
-            out.append("\n");
+            json.append("\n");
         }
 
+        json.append("  ]\n");
+        json.append("}\n");
 
-        out.append("  ]\n");
-
-        out.append("}\n");
-
-        return out.toString();
-    }
-
-
-    /*
-     * ============================================================
-     * HTTP GET
-     * ============================================================
-     */
-
-    private static String get(
-            String url) {
-
-        try {
-
-            HttpRequest request =
-                    HttpRequest.newBuilder()
-                            .uri(
-                                    URI.create(url)
-                            )
-                            .timeout(
-                                    Duration.ofSeconds(45)
-                            )
-                            .header(
-                                    "Accept",
-                                    "text/csv,text/plain,*/*"
-                            )
-                            .GET()
-                            .build();
-
-
-            HttpResponse<String> response =
-                    HTTP.send(
-                            request,
-                            HttpResponse.BodyHandlers
-                                    .ofString(
-                                            StandardCharsets.UTF_8
-                                    )
-                    );
-
-
-            System.out.println(
-                    "HTTP status: " +
-                    response.statusCode()
-            );
-
-
-            if (
-                    response.statusCode() < 200 ||
-                    response.statusCode() >= 300
-            ) {
-
-                throw new RuntimeException(
-                        "HTTP " +
-                        response.statusCode() +
-                        " — " +
-                        compact(
-                                response.body(),
-                                1000
-                        )
-                );
-            }
-
-
-            return response.body();
-
-
-        } catch (IOException e) {
-
-            throw new RuntimeException(
-                    "Network error: " +
-                    e.getMessage(),
-                    e
-            );
-
-
-        } catch (InterruptedException e) {
-
-            Thread.currentThread().interrupt();
-
-            throw new RuntimeException(
-                    "Request interrupted"
-            );
-        }
-    }
-
-
-    /*
-     * ============================================================
-     * Helpers
-     * ============================================================
-     */
-
-    private static String value(
-            String json,
-            String key) {
-
-        Matcher matcher =
-                Pattern.compile(
-                        "\\\"" +
-                        Pattern.quote(key) +
-                        "\\\"\\s*:\\s*\\\"([^\\\"]+)\\\""
-                ).matcher(json);
-
-
-        return matcher.find()
-                ? matcher.group(1)
-                : null;
-    }
-
-
-    private static String enc(
-            String value) {
-
-        return URLEncoder.encode(
-                value,
+        Files.writeString(
+                AKR_JSON,
+                json.toString(),
                 StandardCharsets.UTF_8
         );
     }
 
+    // ============================================================
+    // Metadata
+    // ============================================================
 
-    private static String compactTime(
-            Instant instant) {
+    private static void writeMetadata(
+            String coverageStart,
+            String coverageEnd,
+            Instant requestedStart,
+            Instant requestedEnd,
+            int recordCount)
+            throws IOException {
 
-        return instant
-                .toString()
-                .replace(
-                        "-",
-                        ""
-                )
-                .replace(
-                        ":",
-                        ""
-                )
-                .replace(
-                        ".000",
-                        ""
-                );
+        StringBuilder json =
+                new StringBuilder();
+
+        json.append("{\n");
+
+        json.append(
+                "  \"dataset\": \""
+                        + jsonEscape(DATASET)
+                        + "\",\n"
+        );
+
+        json.append(
+                "  \"variable\": \""
+                        + jsonEscape(VARIABLE)
+                        + "\",\n"
+        );
+
+        json.append(
+                "  \"content_variable\": \""
+                        + jsonEscape(CONTENT_VARIABLE)
+                        + "\",\n"
+        );
+
+        json.append(
+                "  \"source\": \"NASA CDAWeb REST\",\n"
+        );
+
+        json.append(
+                "  \"coverage_start\": \""
+                        + jsonEscape(coverageStart)
+                        + "\",\n"
+        );
+
+        json.append(
+                "  \"coverage_end\": \""
+                        + jsonEscape(coverageEnd)
+                        + "\",\n"
+        );
+
+        json.append(
+                "  \"requested_start\": \""
+                        + requestedStart
+                        + "\",\n"
+        );
+
+        json.append(
+                "  \"requested_end\": \""
+                        + requestedEnd
+                        + "\",\n"
+        );
+
+        json.append(
+                "  \"record_count\": "
+                        + recordCount
+                        + "\n"
+        );
+
+        json.append("}\n");
+
+        Files.writeString(
+                METADATA_JSON,
+                json.toString(),
+                StandardCharsets.UTF_8
+        );
     }
 
+    // ============================================================
+    // XML helper
+    // ============================================================
 
-    private static Instant parseInstant(
-            String value) {
-
-        if (
-                value == null ||
-                value.isBlank()
-        ) {
-
-            return null;
-        }
-
-
-        String s =
-                value.trim();
-
-
-        try {
-
-            return Instant.parse(s);
-
-        } catch (Exception ignored) {
-        }
-
-
-        /*
-         * Some CSV representations may omit fractional
-         * seconds or use slightly different ISO formatting.
-         */
-
-        if (
-                !s.endsWith("Z")
-        ) {
-
-            return null;
-        }
-
-
-        return null;
-    }
-
-
-    private static Double parseDouble(
-            String value) {
-
-        if (
-                value == null ||
-                value.isBlank()
-        ) {
-
-            return null;
-        }
-
-
-        String s =
-                value.trim();
-
-
-        /*
-         * Common missing-value representations.
-         */
-
-        if (
-                s.equalsIgnoreCase("null") ||
-                s.equalsIgnoreCase("nan") ||
-                s.equalsIgnoreCase("n/a") ||
-                s.equalsIgnoreCase("na")
-        ) {
-
-            return null;
-        }
-
-
-        try {
-
-            return Double.parseDouble(s);
-
-        } catch (Exception e) {
-
-            return null;
-        }
-    }
-
-
-    private static String clean(
-            String value) {
-
-        if (
-                value == null
-        ) {
-
-            return "";
-        }
-
-
-        String s =
-                value.trim();
-
-
-        if (
-                s.length() >= 2 &&
-                s.startsWith("\"") &&
-                s.endsWith("\"")
-        ) {
-
-            s =
-                    s.substring(
-                            1,
-                            s.length() - 1
-                    );
-        }
-
-
-        return s.trim();
-    }
-
-
-    private static List<String> splitLines(
-            String text) {
-
-        List<String> lines =
-                new ArrayList<>();
-
-        String[] parts =
-                text.split(
-                        "\\r?\\n"
-                );
-
-
-        for (String part : parts) {
-
-            lines.add(part);
-        }
-
-
-        return lines;
-    }
-
-
-    private static String compact(
+    private static String extractRequired(
+            Pattern pattern,
             String text,
-            int maximum) {
+            String description)
+            throws IOException {
 
-        if (
-                text == null
-        ) {
+        Matcher matcher =
+                pattern.matcher(text);
 
+        if (!matcher.find()) {
+
+            System.err.println();
+            System.err.println(
+                    "Could not find "
+                            + description
+                            + "."
+            );
+
+            System.err.println(
+                    "Server response:"
+            );
+
+            System.err.println(
+                    truncate(text, 5000)
+            );
+
+            throw new IOException(
+                    "Could not extract "
+                            + description
+                            + " from CDAWeb response."
+            );
+        }
+
+        return unescapeXml(
+                matcher.group(1).trim()
+        );
+    }
+
+    private static String unescapeXml(
+            String text) {
+
+        return text
+                .replace("&amp;", "&")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&quot;", "\"")
+                .replace("&apos;", "'");
+    }
+
+    private static String jsonEscape(
+            String text) {
+
+        if (text == null) {
             return "";
         }
 
-
-        String s =
-                text.replaceAll(
-                        "\\s+",
-                        " "
-                ).trim();
-
-
-        if (
-                s.length() > maximum
-        ) {
-
-            return s.substring(
-                    0,
-                    maximum
-            ) + "...";
-        }
-
-
-        return s;
+        return text
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\r", "\\r")
+                .replace("\n", "\\n")
+                .replace("\t", "\\t");
     }
 
+    private static String truncate(
+            String text,
+            int maxLength) {
 
-    private static void atomicWrite(
-            Path path,
-            String text) {
+        if (text == null) {
+            return "";
+        }
 
-        try {
+        if (text.length() <= maxLength) {
+            return text;
+        }
 
-            Files.createDirectories(
-                    path.getParent()
-            );
+        return text.substring(
+                0,
+                maxLength
+        )
+                + "\n...[truncated]";
+    }
 
+    // ============================================================
+    // Diagnostic CSV preview
+    // ============================================================
 
-            Path temporary =
-                    path.resolveSibling(
-                            path.getFileName() +
-                            ".tmp"
-                    );
+    private static void printCsvPreview(
+            String csv) {
 
+        System.out.println();
+        System.out.println(
+                "----- CSV preview -----"
+        );
 
-            Files.writeString(
-                    temporary,
-                    text,
-                    StandardCharsets.UTF_8
-            );
+        String[] lines =
+                csv.replace("\r\n", "\n")
+                   .replace('\r', '\n')
+                   .split("\n");
 
+        int printed = 0;
 
-            try {
+        for (String line : lines) {
 
-                Files.move(
-                        temporary,
-                        path,
-                        StandardCopyOption
-                                .REPLACE_EXISTING,
-                        StandardCopyOption
-                                .ATOMIC_MOVE
-                );
-
-            } catch (
-                    AtomicMoveNotSupportedException e
-            ) {
-
-                Files.move(
-                        temporary,
-                        path,
-                        StandardCopyOption
-                                .REPLACE_EXISTING
-                );
+            if (line.trim().isEmpty()) {
+                continue;
             }
 
-
-        } catch (IOException e) {
-
-            throw new RuntimeException(
-                    "Cannot write " +
-                    path +
-                    ": " +
-                    e.getMessage(),
-                    e
+            System.out.println(
+                    truncate(line, 2000)
             );
+
+            printed++;
+
+            if (printed >= 5) {
+                break;
+            }
         }
+
+        System.out.println(
+                "----- end CSV preview -----"
+        );
     }
 
+    // ============================================================
+    // Record class
+    // ============================================================
 
-    /*
-     * ============================================================
-     * Small data classes
-     * ============================================================
-     */
-
-    private static class Record {
+    private static class CsvRecord {
 
         final Instant time;
 
         final List<Double> values;
 
-
-        Record(
+        CsvRecord(
                 Instant time,
                 List<Double> values) {
 
             this.time = time;
-
             this.values = values;
-        }
-    }
-
-
-    private static class CsvResult {
-
-        final List<Record> records =
-                new ArrayList<>();
-
-        int numericValues = 0;
-
-
-        Instant latestTime() {
-
-            Instant latest = null;
-
-
-            for (
-                    Record record :
-                    records
-            ) {
-
-                if (
-                        latest == null ||
-                        record.time.isAfter(
-                                latest
-                        )
-                ) {
-
-                    latest =
-                            record.time;
-                }
-            }
-
-
-            return latest;
         }
     }
 }
