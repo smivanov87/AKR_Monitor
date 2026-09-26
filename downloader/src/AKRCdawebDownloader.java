@@ -104,16 +104,16 @@ public class AKRCdawebDownloader {
             );
 
     private static final Pattern HAPI_START_PATTERN =
-            Pattern.compile(
-                    "\"startDateTime\"\\s*:\\s*\"([^\"]+)\"",
-                    Pattern.CASE_INSENSITIVE
-            );
+        Pattern.compile(
+                "\"startDate\"\\s*:\\s*\"([^\"]+)\"",
+                Pattern.CASE_INSENSITIVE
+        );
 
-    private static final Pattern HAPI_END_PATTERN =
-            Pattern.compile(
-                    "\"stopDateTime\"\\s*:\\s*\"([^\"]+)\"",
-                    Pattern.CASE_INSENSITIVE
-            );
+private static final Pattern HAPI_END_PATTERN =
+        Pattern.compile(
+                "\"stopDate\"\\s*:\\s*\"([^\"]+)\"",
+                Pattern.CASE_INSENSITIVE
+        );
 
     // ============================================================
     // HTTP client
